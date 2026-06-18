@@ -12,12 +12,19 @@ from .config import THEME
 
 CSS = f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=VT323&family=Space+Mono:wght@400;700&family=Share+Tech+Mono&display=swap');
 
 /* unified vintage monospace 'code' font + pure black canvas + bright text */
 html, body, .stApp, [class*="css"],
 input, button, select, textarea, .stMarkdown, p, label, span, div, td, th {{
     font-family: {THEME.font_body} !important;
+}}
+/* IMPORTANT: re-assert Streamlit's Material icon font so dropdown/expander
+   chevrons & dataframe sort icons render as glyphs (not literal text). */
+[data-testid="stIconMaterial"], span.material-icons, span.material-icons-outlined,
+[class*="material-symbols"], [class*="material-icons"] {{
+    font-family: 'Material Symbols Rounded', 'Material Symbols Outlined',
+                 'Material Icons', 'Material Icons Outlined' !important;
 }}
 .stApp {{ background: {THEME.bg}; color: {THEME.text}; }}
 .stApp, .stMarkdown, p, label, span, div {{ color: {THEME.text}; }}
@@ -28,8 +35,8 @@ input, button, select, textarea, .stMarkdown, p, label, span, div, td, th {{
     position: fixed;
     inset: 0;
     pointer-events: none;
-    z-index: 9999;
-    opacity: 0.06;
+    z-index: 1;
+    opacity: 0.04;
     background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }}
 .stApp::after {{
@@ -37,8 +44,8 @@ input, button, select, textarea, .stMarkdown, p, label, span, div, td, th {{
     position: fixed;
     inset: 0;
     pointer-events: none;
-    z-index: 9998;
-    opacity: 0.35;
+    z-index: 1;
+    opacity: 0.25;
     background: repeating-linear-gradient(
         0deg, rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px,
         rgba(0,0,0,0.25) 3px, rgba(0,0,0,0) 4px);
@@ -64,7 +71,20 @@ div[data-baseweb="select"] {{
     color: #ffffff !important;
     font-weight: 600;
 }}
-.stNumberInput button {{ border-radius: 0 !important; border: 2px solid {THEME.border} !important; }}
+.stNumberInput button {{ border-radius: 0 !important; border: 1px solid {THEME.border} !important; }}
+
+/* sub-section inputs (number/date/text) square + thinner 1px border */
+.stNumberInput div[data-baseweb="input"], .stDateInput div[data-baseweb="input"],
+.stNumberInput div[data-baseweb="base-input"], [data-baseweb="spinner"],
+.stNumberInput input, .stDateInput input {{
+    border-radius: 0 !important; border-width: 1px !important;
+}}
+
+/* consistent "?" help emblems — muted, no box, uniform */
+[data-testid="stTooltipIcon"], [data-testid="stTooltipIcon"] svg {{
+    border: none !important; background: transparent !important;
+    color: {THEME.muted} !important; fill: {THEME.muted} !important;
+}}
 
 /* sidebar */
 section[data-testid="stSidebar"] {{
@@ -97,8 +117,8 @@ section[data-testid="stSidebar"] {{
     transition: all 0.1s ease;
 }}
 .stButton>button:hover, .stDownloadButton>button:hover {{
-    background: linear-gradient(90deg, {THEME.teal}, {THEME.mustard}, {THEME.coral});
-    color: #000; border-color: {THEME.teal} !important;
+    background: linear-gradient(90deg, {THEME.navy}, {THEME.mauve}, {THEME.coral});
+    color: #fff; border-color: {THEME.mauve} !important;
 }}
 
 /* multiselect tags cycle palette colors */
@@ -131,8 +151,9 @@ section[data-testid="stSidebar"] {{
     margin-right: 4px;
 }}
 .stTabs [aria-selected="true"] {{
-    color: #000 !important;
-    background: linear-gradient(120deg, {THEME.teal}, {THEME.mint}, {THEME.mustard});
+    color: #ffffff !important;
+    background: linear-gradient(120deg, {THEME.navy}, {THEME.mauve}, {THEME.coral});
+    border-color: {THEME.mauve} !important;
 }}
 
 /* metrics */
@@ -180,11 +201,12 @@ def _logo_svg(size: int = 64) -> str:
 
 
 BANNER = f"""
-<div style="display:flex; align-items:center; gap:1rem; margin-bottom:0.4em;">
-  <div style="line-height:0;">{_logo_svg(64)}</div>
-  <div>
-    <div style="font-family:{THEME.font_display}; font-size:4rem; font-weight:400;
-                letter-spacing:0.18em; color:#ffffff; line-height:1;">PARALLAX</div>
+<div style="display:flex; align-items:center; gap:1.1rem; margin-bottom:0.4em;">
+  <div style="line-height:0;">{_logo_svg(96)}</div>
+  <div style="display:flex; flex-direction:column; gap:0.1rem;">
+    <div style="font-family:{THEME.font_display}; font-size:5rem; font-weight:400;
+                letter-spacing:0.16em; color:#ffffff; line-height:0.9;
+                -webkit-text-stroke:1.2px #ffffff; text-shadow:0 0 1px #fff;">PARALLAX</div>
     <div class="parallax-tag">systematic strategy R&amp;D lab</div>
   </div>
 </div>
@@ -204,21 +226,26 @@ def section(label: str, idx: int = 0) -> str:
     )
 
 
-def style_fig(fig: go.Figure, height: int = 440, transparent: bool = True) -> go.Figure:
+def style_fig(fig: go.Figure, height: int = 440, transparent: bool = True,
+              log_y: bool = False) -> go.Figure:
     """Apply the Parallax theme. Charts are transparent (pure-black canvas
-    shows through), leaving only axes, gridlines, and data visible."""
+    shows through), leaving only axes, gridlines, and data visible.
+
+    ``log_y`` switches the y-axis to a logarithmic scale.
+    """
     bg = "rgba(0,0,0,0)" if transparent else THEME.bg
     fig.update_layout(
         template="plotly_dark",
         height=height,
         paper_bgcolor=bg,
         plot_bgcolor=bg,
-        font=dict(family="Share Tech Mono, monospace", color=THEME.text, size=12),
-        title_font=dict(family="VT323, Share Tech Mono, monospace", size=20, color="#ffffff"),
+        font=dict(family="Space Mono, monospace", color=THEME.text, size=12),
+        title_font=dict(family="VT323, Space Mono, monospace", size=22, color="#ffffff"),
         colorway=list(THEME.series),
         margin=dict(l=55, r=24, t=48, b=44),
         legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor=THEME.grid, borderwidth=1),
         xaxis=dict(gridcolor=THEME.grid, zerolinecolor=THEME.grid, linecolor=THEME.muted),
-        yaxis=dict(gridcolor=THEME.grid, zerolinecolor=THEME.grid, linecolor=THEME.muted),
+        yaxis=dict(gridcolor=THEME.grid, zerolinecolor=THEME.grid, linecolor=THEME.muted,
+                   type="log" if log_y else "linear"),
     )
     return fig
