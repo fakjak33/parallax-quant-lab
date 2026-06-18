@@ -1,0 +1,26 @@
+source:
+  mode: Real (yfinance)
+  tickers: [SPY, QQQ, GLD]
+  start: "2015-01-01"
+  end: ""
+strategies:
+  - key: ema
+    params: {fast: 16, slow: 64}
+  - key: tsmom
+    params: {lookback: 90}
+  - key: breakout
+    params: {lookback: 40, smooth: 10}
+backtest:
+  capital: 1000000.0
+  target_vol: 0.20
+  cost_bps: 1.0
+  slippage_bps: 0.5
+  vol_lookback: 32
+  trading_days: 256
+risk:
+  use_atr_stop: true
+  use_atr_tp: false
+  atr_period: 14
+  atr_stop_mult: 3.0
+  atr_tp_mult: 6.0
+  trailing_stop: true
