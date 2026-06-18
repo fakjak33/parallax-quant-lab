@@ -31,3 +31,10 @@ class Crossover(Strategy):
         slow = close.rolling(int(self.values["slow"])).mean()
         pct_gap = (fast - slow) / slow.replace(0.0, np.nan)
         return pct_gap.rolling(int(self.values["smooth"])).mean().fillna(0.0)
+
+    def indicator_lines(self, ohlcv):
+        close = ohlcv["close"]
+        return {
+            f"SMA fast ({int(self.values['fast'])})": close.rolling(int(self.values["fast"])).mean(),
+            f"SMA slow ({int(self.values['slow'])})": close.rolling(int(self.values["slow"])).mean(),
+        }

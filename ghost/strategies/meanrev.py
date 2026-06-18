@@ -31,3 +31,14 @@ class MeanReversion(Strategy):
         z = (close - ma) / sd
         # negative => fade the move
         return (-z).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    def indicator_lines(self, ohlcv):
+        close = ohlcv["close"]
+        lb = int(self.values["lookback"])
+        ma = close.rolling(lb).mean()
+        sd = close.rolling(lb).std()
+        return {
+            f"MA ({lb})": ma,
+            "+2σ band": ma + 2 * sd,
+            "−2σ band": ma - 2 * sd,
+        }

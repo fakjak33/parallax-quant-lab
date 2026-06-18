@@ -33,3 +33,11 @@ class Breakout(Strategy):
         pos = (close - roll_min) / rng - 0.5
         smoothed = pos.rolling(int(self.values["smooth"])).mean()
         return smoothed.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+
+    def indicator_lines(self, ohlcv):
+        close = ohlcv["close"]
+        lb = int(self.values["lookback"])
+        return {
+            f"Donchian high ({lb})": close.rolling(lb).max(),
+            f"Donchian low ({lb})": close.rolling(lb).min(),
+        }

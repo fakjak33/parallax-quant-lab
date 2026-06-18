@@ -57,3 +57,34 @@ def run_spectrum(
 
     table = pd.DataFrame(rows).set_index(param)
     return results, table
+
+
+def run_spectrum_2d(
+    strategy_cls,
+    ohlcv: pd.DataFrame,
+    param_x: str,
+    values_x: list,
+    param_y: str,
+    values_y: list,
+    bt: BacktestConfig | None = None,
+    risk: RiskConfig | None = None,
+    fixed_params: dict | None = None,
+    metric: str = "Sharpe",
+) -> pd.DataFrame:
+    """Sweep TWO parameters and return a metric grid (index=y, columns=x).
+
+    Used for a Sharpe heatmap, e.g. fast x slow for an EMA rule. The deflated
+    Sharpe trial count is the full grid size.
+    """
+    fixed_params = fixed_params or {}
+    n_trials = len(values_x) * len(values_y)
+    grid = pd.DataFrame(index=values_y, columns=values_x, dtype=float)
+    grid.index.name = param_y
+    grid.columns.name = param_x
+
+    for vy in values_y:
+        for vx in values_x:
+            strat = strategy_cls(**{**fixed_params, param_x: vx, param_y: vy})
+            res = run_strategy(strat, ohlcv, bt=bt, risk=risk, n_trials=n_trials)
+            grid.loc[vy, vx] = res.stats.get(metric, float("nan"))
+    return grid

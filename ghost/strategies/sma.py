@@ -27,3 +27,10 @@ class SMACrossover(Strategy):
         diff = close.rolling(fast).mean() - close.rolling(slow).mean()
         vol = ew_vol(close, annualize=False) * close
         return normalize_by_vol(diff, vol)
+
+    def indicator_lines(self, ohlcv):
+        close = ohlcv["close"]
+        return {
+            f"SMA fast ({int(self.values['fast'])})": close.rolling(int(self.values["fast"])).mean(),
+            f"SMA slow ({int(self.values['slow'])})": close.rolling(int(self.values["slow"])).mean(),
+        }

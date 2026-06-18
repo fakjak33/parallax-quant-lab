@@ -57,29 +57,34 @@ class RiskConfig:
 # mint, coral, orange, mustard, cream. Modernist & minimalist on near-black.
 @dataclass(frozen=True)
 class Theme:
-    bg: str = "#0a0a0a"             # near-black base
-    panel: str = "#141414"          # raised panel
-    grid: str = "#262626"           # subtle gridlines
-    teal: str = "#2a9d8f"           # primary accent
-    coral: str = "#e34a33"          # long / positive emphasis
-    orange: str = "#ee7733"
-    mustard: str = "#f4b860"
-    mauve: str = "#a05c7b"
-    mint: str = "#84c7a8"
-    navy: str = "#1f6f8b"
-    cream: str = "#ece5d8"
-    text: str = "#ece5d8"           # cream text on black
-    muted: str = "#8a847a"
-    # bold modernist display + clean sans body
-    font_display: str = "'Archivo', 'Helvetica Neue', Arial, sans-serif"
-    font_body: str = "'Inter', 'Helvetica Neue', Arial, sans-serif"
+    bg: str = "#000000"             # pure black base
+    panel: str = "#0b0b0b"          # raised panel (near-black)
+    grid: str = "#2c2c2c"           # subtle gridlines
+    border: str = "#ffffff"         # brutalist hard borders
+    teal: str = "#2ec4b6"           # primary accent (brighter)
+    coral: str = "#ff5a3c"          # long emphasis (brighter)
+    orange: str = "#ff8c2b"
+    mustard: str = "#ffc857"
+    mauve: str = "#c46b8b"
+    mint: str = "#7bdcb5"
+    navy: str = "#2a9bc4"
+    cream: str = "#ffffff"
+    text: str = "#ffffff"           # pure white text
+    muted: str = "#b8b8b8"          # brighter muted
+    # unified modernist geometric font across the whole app
+    font_display: str = "'Space Grotesk', 'Archivo', Helvetica, Arial, sans-serif"
+    font_body: str = "'Space Grotesk', 'Inter', Helvetica, Arial, sans-serif"
     # accent roles
-    long_color: str = "#2a9d8f"     # teal-green for longs
-    short_color: str = "#e34a33"    # coral-red for shorts
-    # ordered palette for multi-series plots (retro pantone set)
+    long_color: str = "#2ec4b6"     # teal-green for longs
+    short_color: str = "#ff5a3c"    # coral-red for shorts
+    # ordered palette for multi-series plots (retro pantone set, brightened)
     series: tuple = (
-        "#2a9d8f", "#e34a33", "#f4b860", "#84c7a8",
-        "#a05c7b", "#ee7733", "#1f6f8b", "#ece5d8",
+        "#2ec4b6", "#ff5a3c", "#ffc857", "#7bdcb5",
+        "#c46b8b", "#ff8c2b", "#2a9bc4", "#ffffff",
+    )
+    # section accents — cycle different colors across UI sections
+    section_colors: tuple = (
+        "#2ec4b6", "#ffc857", "#ff5a3c", "#c46b8b", "#2a9bc4", "#7bdcb5",
     )
 
 

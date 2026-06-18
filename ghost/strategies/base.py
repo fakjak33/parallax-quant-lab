@@ -57,6 +57,14 @@ class Strategy:
         cols = {tkr: self.forecast(df) for tkr, df in panel.items()}
         return pd.DataFrame(cols)
 
+    def indicator_lines(self, ohlcv: pd.DataFrame) -> dict[str, pd.Series]:
+        """Named price-space lines to overlay on the chart (MAs, bands, etc.).
+
+        Default: no overlays. Trend/MA rules override this so the user can see
+        crossovers next to the entry/exit markers.
+        """
+        return {}
+
     def describe(self) -> str:
         ps = ", ".join(f"{k}={v}" for k, v in self.values.items())
         return f"{self.label} ({ps})" if ps else self.label

@@ -39,3 +39,13 @@ class GMMA(Strategy):
         ).mean(axis=1)
         vol = ew_vol(close, annualize=False) * close
         return normalize_by_vol(short - long, vol)
+
+    def indicator_lines(self, ohlcv):
+        close = ohlcv["close"]
+        speed = float(self.values["speed"])
+        lines = {}
+        for s in _SHORT:
+            lines[f"short {int(s*speed)}"] = close.ewm(span=max(2, int(s * speed))).mean()
+        for s in _LONG:
+            lines[f"long {int(s*speed)}"] = close.ewm(span=max(3, int(s * speed))).mean()
+        return lines

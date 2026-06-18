@@ -32,3 +32,10 @@ class EMACrossover(Strategy):
         # normalize by price * daily vol => unit-free trend strength
         vol = ew_vol(close, annualize=False) * close
         return normalize_by_vol(ewmac, vol)
+
+    def indicator_lines(self, ohlcv):
+        close = ohlcv["close"]
+        return {
+            f"EMA fast ({int(self.values['fast'])})": close.ewm(span=int(self.values["fast"])).mean(),
+            f"EMA slow ({int(self.values['slow'])})": close.ewm(span=int(self.values["slow"])).mean(),
+        }
