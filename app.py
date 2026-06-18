@@ -17,7 +17,10 @@ from ghost.config import (
 )
 from ghost.data import providers, synthetic
 from ghost.data.providers import TIMEFRAMES, resample_ohlcv, clean_ticker
-from ghost.data.universe import UNIVERSES, master_categories, master_tickers
+from ghost.data.universe import UNIVERSES, master_categories, master_tickers, is_leveraged
+from ghost.accumulation import strategies as accum_strats
+from ghost.accumulation.engine import AccumConfig, run_accumulation, benchmarks
+from ghost.accumulation.regression import regression_channel
 from ghost.backtest.engine import run_single
 from ghost.backtest.spectrum import run_spectrum, run_spectrum_2d, make_spectrum
 from ghost.backtest.diagnostics import return_correlation, walk_forward, beta_and_correlation
@@ -148,6 +151,8 @@ def sidebar():
         else:
             cat = st.sidebar.selectbox("Category", master_categories())
             options = master_tickers(cat)
+            if st.sidebar.checkbox("Exclude leveraged/inverse ETFs", True):
+                options = [t for t in options if not is_leveraged(t)]
         cfg["tickers"] = st.sidebar.multiselect("Tickers", options,
                                                 default=options[:1] if options else [],
                                                 help="Defaults to a single ticker.")
@@ -302,6 +307,17 @@ def add_trade_markers(fig, price, ledger):
 # Main
 # ----------------------------------------------------------------------------
 def main():
+    mode = st.sidebar.radio("◆ MODE", ["Strategy R&D", "Accumulation Lab"], index=0,
+                            help="Strategy R&D = systematic trading backtester. "
+                                 "Accumulation Lab = long-term DCA / dip-buying strategies.")
+    st.sidebar.markdown("<hr style='border-color:#2c2c2c'>", unsafe_allow_html=True)
+    if mode == "Accumulation Lab":
+        run_accum_lab()
+    else:
+        run_rnd()
+
+
+def run_rnd():
     cfg = sidebar()
     data = load_data(cfg)
     if not data:
@@ -617,6 +633,177 @@ def main():
                           .format({"IS_Sharpe": "{:.2f}", "OOS_Sharpe": "{:.2f}"})
                           .apply(_oos_row, axis=1))
                 st.dataframe(styler, use_container_width=True)
+
+
+ACCUM_HELP = {
+    "lab": "Test long-term accumulation: a buy rule deploys cash on triggers (dips, VIX, RSI, MA touch, regression bands…) and is compared to fixed DCA and lump-sum buy & hold on the SAME contributions.",
+    "initial": "Cash available at the start (your dry powder).",
+    "contribution": "New cash added every cadence period (your ongoing savings).",
+    "cadence": "How often you add the contribution and (for DCA) invest it.",
+    "deploy": "Fraction of available cash deployed each time the buy rule fires (1.0 = go all-in on a signal).",
+    "sell": "Fraction of holdings sold each time the (optional) sell rule fires.",
+    "stats": "Beta/alpha/correlation are vs the underlying's own returns. Alpha = annualized excess return after removing beta·market.",
+}
+
+
+def _render_accum_params(rule_cls, prefix):
+    vals = {}
+    for name, (d, lo, hi, step) in rule_cls.params.items():
+        is_int = isinstance(d, int) and isinstance(step, int)
+        key = f"{prefix}_{rule_cls.key}_{name}"
+        if is_int:
+            vals[name] = int(st.number_input(name, int(lo), int(hi), int(d), int(step), key=key))
+        else:
+            vals[name] = float(st.number_input(name, float(lo), float(hi), float(d), float(step), key=key))
+    return vals
+
+
+def run_accum_lab():
+    st.sidebar.markdown(section("Data source", 0), unsafe_allow_html=True)
+    src_mode = st.sidebar.radio("Mode", ["Real (yfinance)", "Synthetic"], index=0,
+                                key="acc_mode", help=HELP["mode"])
+    cfg = {"mode": src_mode}
+    if src_mode.startswith("Real"):
+        grp = st.sidebar.selectbox("Universe", list(UNIVERSES), index=0, key="acc_uni")
+        ticker = st.sidebar.selectbox("Ticker", UNIVERSES[grp], key="acc_tkr")
+        custom = st.sidebar.text_input("Or type a ticker", "", key="acc_custom")
+        if custom.strip():
+            ticker = clean_ticker(custom)
+        cfg["tickers"] = [ticker]
+    else:
+        cfg["kind"] = st.sidebar.selectbox("Synthetic kind",
+            ["trending", "mean_reverting", "gbm", "regime", "fat_tailed"], key="acc_kind")
+        cfg["n_days"] = st.sidebar.number_input("Days", 300, 6000, 2000, 100, key="acc_days")
+        cfg["seed"] = int(st.sidebar.number_input("Seed", value=42, step=1, key="acc_seed"))
+        cfg["n_assets"] = 1
+        ticker = "SYNTH_1"
+
+    st.sidebar.markdown(section("Timeframe", 1), unsafe_allow_html=True)
+    c1, c2 = st.sidebar.columns(2)
+    cfg["start"] = c1.text_input("Start", "2010-01-01", key="acc_start")
+    cfg["end"] = c2.text_input("End", "", key="acc_end")
+    cfg["tf"] = st.sidebar.selectbox("Candles", list(TIMEFRAMES), index=1, key="acc_tf")
+
+    st.sidebar.markdown(section("Contributions", 2), unsafe_allow_html=True)
+    acfg = AccumConfig()
+    acfg.initial_cash = st.sidebar.number_input("Initial cash ($)", 0.0, 1e9, 10_000.0,
+                                                1_000.0, help=ACCUM_HELP["initial"])
+    acfg.contribution = st.sidebar.number_input("Contribution ($)", 0.0, 1e8, 1_000.0,
+                                                100.0, help=ACCUM_HELP["contribution"])
+    acfg.cadence = st.sidebar.selectbox("Cadence", ["Daily", "Weekly", "Monthly"], index=1,
+                                        help=ACCUM_HELP["cadence"])
+    acfg.deploy_fraction = st.sidebar.slider("Deploy fraction per signal", 0.05, 1.0, 1.0, 0.05,
+                                             help=ACCUM_HELP["deploy"])
+    acfg.cash_yield_annual = st.sidebar.number_input("Idle cash yield (annual)", 0.0, 0.10,
+                                                     0.0, 0.005)
+
+    st.sidebar.markdown(section("Buy rule", 3), unsafe_allow_html=True)
+    buy_label = st.sidebar.selectbox("Accumulation trigger",
+        [c.label for c in accum_strats.BUY_RULES.values()],
+        help="When to deploy cash. 'Fixed DCA' = always (baseline).")
+    buy_cls = next(c for c in accum_strats.BUY_RULES.values() if c.label == buy_label)
+    st.sidebar.caption(buy_cls.desc)
+    with st.sidebar.expander("Buy parameters", expanded=True):
+        buy_vals = _render_accum_params(buy_cls, "buy")
+
+    st.sidebar.markdown(section("Sell rule (optional)", 4), unsafe_allow_html=True)
+    sell_names = ["(none)"] + [c.label for c in accum_strats.SELL_RULES.values()]
+    sell_label = st.sidebar.selectbox("Trim trigger", sell_names)
+    sell_rule = None
+    if sell_label != "(none)":
+        sell_cls = next(c for c in accum_strats.SELL_RULES.values() if c.label == sell_label)
+        st.sidebar.caption(sell_cls.desc)
+        acfg.sell_fraction = st.sidebar.slider("Sell fraction per signal", 0.05, 1.0, 0.25,
+                                               0.05, help=ACCUM_HELP["sell"])
+        with st.sidebar.expander("Sell parameters", expanded=True):
+            sell_vals = _render_accum_params(sell_cls, "sell")
+        sell_rule = sell_cls(**sell_vals)
+
+    # --- load data + VIX context ------------------------------------------
+    try:
+        data = load_data(cfg)
+    except Exception as e:
+        st.error(f"Data load failed: {e}")
+        return
+    if not data or ticker not in data:
+        st.info("Select a valid ticker to begin.")
+        return
+    close = data[ticker]["close"].dropna()
+    ctx = {}
+    if buy_cls.key == "vix":
+        try:
+            ctx["vix"] = providers.get_prices("^VIX", start=cfg["start"] or None,
+                                              end=cfg["end"] or None)["close"]
+        except Exception:
+            st.warning("Couldn't fetch ^VIX; VIX rule will not fire.")
+
+    buy_rule = buy_cls(**buy_vals)
+    res = run_accumulation(close, buy_rule, sell_rule, acfg, ctx)
+    bench = benchmarks(close, acfg)
+
+    st.markdown(section(f"Accumulation — {ticker}", 0), unsafe_allow_html=True)
+    st.caption(ACCUM_HELP["lab"])
+
+    t_eq, t_dd, t_stats, t_reg = st.tabs(["EQUITY", "DRAWDOWN", "STATS", "REGRESSION"])
+
+    with t_eq:
+        log_y = st.checkbox("Log scale", True, key="acc_log", help=HELP["logscale"])
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=res.equity.index, y=res.equity, mode="lines",
+                                 name=f"{buy_label}", line=dict(color=THEME.teal, width=2)))
+        for name, eq in bench.items():
+            fig.add_trace(go.Scatter(x=eq.index, y=eq, mode="lines", name=name,
+                                     line=dict(dash="dot")))
+        fig.add_trace(go.Scatter(x=res.invested.index, y=res.invested, mode="lines",
+                                 name="Invested", line=dict(color=THEME.muted, dash="dash")))
+        fig.update_layout(title=f"{ticker} — strategy vs DCA vs buy&hold")
+        st.plotly_chart(style_fig(fig, log_y=log_y), use_container_width=True)
+        c = st.columns(4)
+        c[0].metric("Final equity", f"${res.stats['FinalEquity']:,.0f}")
+        c[1].metric("Invested", f"${res.stats['Invested']:,.0f}")
+        c[2].metric("Profit", f"${res.stats['Profit']:,.0f}")
+        c[3].metric("Return on invested", f"{res.stats['ReturnOnInvested%']:.1f}%")
+
+    with t_dd:
+        from ghost.backtest import metrics as M
+        ddfig = go.Figure()
+        ddfig.add_trace(go.Scatter(x=res.equity.index,
+                                   y=M.drawdown_series(res.equity.pct_change().fillna(0)) * 100,
+                                   mode="lines", name=buy_label, line=dict(color=THEME.teal)))
+        for name, eq in bench.items():
+            ddfig.add_trace(go.Scatter(x=eq.index,
+                                       y=M.drawdown_series(eq.pct_change().fillna(0)) * 100,
+                                       mode="lines", name=name, line=dict(dash="dot")))
+        ddfig.update_layout(title="DRAWDOWN (%)", yaxis_title="Drawdown %")
+        st.plotly_chart(style_fig(ddfig), use_container_width=True)
+
+    with t_stats:
+        st.caption(ACCUM_HELP["stats"])
+        rows = {buy_label: res.stats}
+        from ghost.accumulation.engine import _accum_stats
+        for name, eq in bench.items():
+            inv = res.invested  # same contribution schedule
+            rows[name] = _accum_stats(eq, inv, close)
+        tbl = pd.DataFrame(rows).T[["FinalEquity", "Profit", "ReturnOnInvested%",
+                                    "AnnVol%", "MaxDD%", "Beta", "Alpha(ann)%", "Corr"]]
+        st.dataframe(tbl.style.format("{:.2f}"), use_container_width=True)
+
+    with t_reg:
+        st.caption("Linear/log regression channel with ±k·σ bands — buy near the "
+                   "lower band, sell near the upper band.")
+        c1, c2, c3 = st.columns(3)
+        lb = int(c1.number_input("Lookback (bars)", 60, 2000, 504, 10, key="reg_lb"))
+        k = float(c2.number_input("Std bands (k)", 0.5, 4.0, 2.0, 0.25, key="reg_k"))
+        logfit = c3.checkbox("Log regression", True, key="reg_log")
+        ch = regression_channel(close, lb, k, logfit)
+        rfig = go.Figure()
+        rfig.add_trace(go.Scatter(x=close.index, y=close, name=ticker,
+                                  line=dict(color="#fff", width=1.5)))
+        rfig.add_trace(go.Scatter(x=ch.index, y=ch["fit"], name="fit", line=dict(color=THEME.mustard)))
+        rfig.add_trace(go.Scatter(x=ch.index, y=ch["upper"], name="+kσ (sell)", line=dict(color=THEME.coral, dash="dot")))
+        rfig.add_trace(go.Scatter(x=ch.index, y=ch["lower"], name="−kσ (buy)", line=dict(color=THEME.teal, dash="dot")))
+        rfig.update_layout(title=f"{ticker} — {'log' if logfit else 'linear'} regression channel")
+        st.plotly_chart(style_fig(rfig, log_y=logfit), use_container_width=True)
 
 
 if __name__ == "__main__":

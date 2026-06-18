@@ -64,6 +64,18 @@ class MyRule(Strategy):
         ...  # return an unscaled pandas Series
 ```
 
+## Modes
+A sidebar **Mode** toggle switches between:
+- **Strategy R&D** — the Carver-style systematic trading backtester (spectrum,
+  drawdown, Monte Carlo, Kelly, diagnostics).
+- **Accumulation Lab** — long-term DCA / dip-buying strategies (buy on drawdown,
+  VIX, RSI, MA touch, MA slope, regression bands; optional sell rules like the
+  Mayer multiple) compared against fixed DCA and lump-sum buy & hold, with
+  beta/alpha/correlation/drawdown stats and linear/log regression channels.
+
+Universe: ~500 curated liquid large/mid-cap stocks + ETFs (leveraged/inverse
+ETFs excluded by default).
+
 ## Deploying / remote access
 
 See [DEPLOY.md](DEPLOY.md) for a step-by-step guide to running Parallax on a
