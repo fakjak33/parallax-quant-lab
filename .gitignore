@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+data_cache/
+.pytest_cache/
+*.egg-info/
+.streamlit/secrets.toml
+configs/*.yaml
+!configs/example.yaml
+.DS_Store
