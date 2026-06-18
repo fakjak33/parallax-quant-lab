@@ -23,11 +23,20 @@ from ghost.backtest.diagnostics import (
 )
 from ghost.backtest.trades import extract_trades
 from ghost.backtest import montecarlo
+from ghost.data.providers import clean_ticker
+from ghost.auth import require_password
 from ghost.ui_theme import CSS, BANNER, section, style_fig
 
 st.set_page_config(page_title="PARALLAX // quant lab", layout="wide", page_icon="◧")
 st.markdown(CSS, unsafe_allow_html=True)
+
+# Password gate (open locally when no secret is set; required once deployed).
+require_password()
+
 st.markdown(BANNER, unsafe_allow_html=True)
+
+# Resource caps to keep a public instance responsive under load.
+MAX_TICKERS = 12
 
 # Hover-help definitions for features.
 HELP = {
@@ -120,7 +129,14 @@ def sidebar():
             help="Pick one or more tickers. Defaults to a single ticker.")
         custom = st.sidebar.text_input("Add tickers (comma-sep)", "")
         if custom.strip():
-            cfg["tickers"] += [t.strip().upper() for t in custom.split(",") if t.strip()]
+            for raw in custom.split(","):
+                if raw.strip():
+                    try:
+                        cfg["tickers"].append(clean_ticker(raw))
+                    except ValueError:
+                        st.sidebar.warning(f"Ignored invalid ticker: {raw.strip()!r}")
+        # de-dupe and cap the number of tickers for responsiveness
+        cfg["tickers"] = list(dict.fromkeys(cfg["tickers"]))[:MAX_TICKERS]
     else:
         cfg["kind"] = st.sidebar.selectbox(
             "Synthetic kind",
