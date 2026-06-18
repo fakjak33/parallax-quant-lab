@@ -64,6 +64,17 @@ class MyRule(Strategy):
         ...  # return an unscaled pandas Series
 ```
 
+## Deploying / remote access
+
+See [DEPLOY.md](DEPLOY.md) for a step-by-step guide to running Parallax on a
+private, **password-protected** URL (Streamlit Community Cloud) so you can open
+it from a phone or another computer.
+
+Security measures baked in: a password gate (`ghost/auth.py`, configured via
+Streamlit secrets), ticker-input sanitization with path-traversal protection
+(`ghost.data.providers.clean_ticker`), and resource caps on tickers / sweep
+grid sizes. Run `pip-audit` to check dependencies for known CVEs.
+
 ## Tests
 
 ```bash

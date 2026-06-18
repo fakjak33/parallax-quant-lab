@@ -30,8 +30,33 @@ def resample_ohlcv(df: pd.DataFrame, rule: str) -> pd.DataFrame:
     return df.resample(rule).agg(use).dropna(how="any")
 
 
+import re
+
+# yfinance tickers are letters/digits plus a few symbols (e.g. BRK-B, ^GSPC,
+# EURUSD=X). Whitelist those only — this also blocks path traversal in the
+# cache filename (no slashes, dots-dots, backslashes get through).
+_TICKER_RE = re.compile(r"[^A-Z0-9.\-^=]")
+_MAX_TICKER_LEN = 15
+
+
+def clean_ticker(ticker: str) -> str:
+    """Uppercase and strip a ticker to safe characters; raise if nothing valid."""
+    t = _TICKER_RE.sub("", str(ticker).upper())[:_MAX_TICKER_LEN]
+    # collapse any run of dots to a single dot and trim leading/trailing dots
+    # (defense in depth against path-traversal artifacts like '..')
+    t = re.sub(r"\.+", ".", t).strip(".")
+    if not t or t.strip("-^=") == "":
+        raise ValueError(f"Invalid ticker: {ticker!r}")
+    return t
+
+
 def _cache_path(ticker: str) -> Path:
-    return DATA_CACHE / f"{ticker.upper().replace('/', '_')}.parquet"
+    safe = clean_ticker(ticker).replace("/", "_")
+    path = (DATA_CACHE / f"{safe}.parquet").resolve()
+    # ensure the resolved path stays inside the cache directory
+    if DATA_CACHE.resolve() not in path.parents:
+        raise ValueError(f"Unsafe cache path for ticker {ticker!r}")
+    return path
 
 
 def _download(ticker: str, start: str | None, end: str | None) -> pd.DataFrame:
@@ -72,6 +97,7 @@ def get_prices(
     Cached to parquet. On a cache hit the full cached history is returned and
     then sliced to ``[start, end]`` so different date windows share one file.
     """
+    ticker = clean_ticker(ticker)
     path = _cache_path(ticker)
 
     if path.exists() and not force_refresh:
