@@ -49,6 +49,10 @@ class BacktestConfig:
     sizing_mode: str = "vol_target"
     fixed_pct: float = 1.0          # fraction of capital deployed at full forecast
     fixed_dollar: float = DEFAULT_CAPITAL  # $ notional at full forecast
+    # execution delay (wait N bars after a signal before acting); off by default
+    use_delay: bool = False
+    entry_delay: int = 0            # bars to wait before increasing exposure
+    exit_delay: int = 0             # bars to wait before reducing exposure
 
     def __post_init__(self):
         # keep the legacy use_vol_target flag in sync with sizing_mode
@@ -96,9 +100,9 @@ class Theme:
     cream: str = "#ffffff"
     text: str = "#ffffff"           # pure white text
     muted: str = "#b8b8b8"          # brighter muted
-    # vintage grainy monospace "code" font across the whole app
-    font_display: str = "'VT323', 'Share Tech Mono', 'Courier New', monospace"
-    font_body: str = "'Share Tech Mono', 'VT323', 'Courier New', monospace"
+    # vintage monospace "code" font: Space Mono body + VT323 pixel display
+    font_display: str = "'VT323', 'Space Mono', 'Courier New', monospace"
+    font_body: str = "'Space Mono', 'Share Tech Mono', 'Courier New', monospace"
     # accent roles
     long_color: str = "#2ec4b6"     # teal-green for longs
     short_color: str = "#ff5a3c"    # coral-red for shorts

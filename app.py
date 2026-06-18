@@ -54,6 +54,14 @@ HELP = {
     "kelly": "The Kelly criterion gives the growth-optimal bet size. Full Kelly maximizes long-run growth but is very swingy; most use half- or quarter-Kelly.",
     "drawdown": "Drawdown = % below the prior equity peak. Shows pain/risk over time vs just buying and holding the underlying.",
     "capture": "Upside capture = how much of the underlying's up-day return the strategy captures (>100% = amplifies gains). Downside capture = same for down days (<100% = cushions losses).",
+    "delay": "Wait a fixed number of bars after a signal fires before acting (e.g. confirm an EMA cross for 5 candles before entering). Entry delay applies to opening/adding; exit delay to closing/trimming.",
+    "logscale": "Log scale spaces equal % moves equally — better for long histories and comparing assets at different price levels. Linear shows absolute dollar moves.",
+    "mc_pct": "Distribution across all bootstrap simulations: p5 = pessimistic (5th percentile), p50 = median, p95 = optimistic (95th). A wide p5→p95 gap means the result is luck-sensitive.",
+    "kelly_full": "Full Kelly: the growth-optimal leverage = mean/variance of returns. Maximizes long-run compounding but is very volatile and unforgiving of estimation error.",
+    "kelly_half": "Half Kelly: half the full-Kelly leverage. ~75% of the growth with far less volatility — the common practical choice.",
+    "kelly_quarter": "Quarter Kelly: a conservative quarter of full Kelly, for when return estimates are uncertain.",
+    "wf_color": "IS = in-sample (earlier, 'fitted' period); OOS = out-of-sample (later, unseen). Green IS = healthy Sharpe; green OOS = the edge held up out-of-sample; red OOS = it decayed (overfitting warning).",
+    "corr_under": "Add underlyings (SPY, TLT, GLD…) to see how your strategies' returns correlate with real assets — not just with each other.",
 }
 
 PARAM_HELP = {
@@ -193,7 +201,15 @@ def sidebar():
     bt.direction = st.sidebar.radio("Direction", ["both", "long", "short"],
                                     horizontal=True, help=HELP["direction"])
 
-    sb("Stops & take-profit", 5)
+    sb("Execution delay", 5)
+    bt.use_delay = st.sidebar.checkbox("Delay entries/exits", False, help=HELP["delay"])
+    if bt.use_delay:
+        bt.entry_delay = int(st.sidebar.number_input("Entry delay (bars)", 0, 100, 0, 1,
+                             help="Bars to wait after a signal before opening/adding."))
+        bt.exit_delay = int(st.sidebar.number_input("Exit delay (bars)", 0, 100, 0, 1,
+                            help="Bars to wait after a signal before closing/trimming."))
+
+    sb("Stops & take-profit", 6)
     risk = RiskConfig()
     stop_kind = st.sidebar.selectbox("Stop-loss", ["None", "ATR", "Percent"], help=HELP["stop"])
     if stop_kind == "ATR":
@@ -250,14 +266,36 @@ def load_data(cfg):
     return out
 
 
-def add_trade_markers(fig, price, position):
-    sign = np.sign(position).fillna(0.0)
-    prev = sign.shift(1).fillna(0.0)
-    le, se = (sign > 0) & (prev <= 0), (sign < 0) & (prev >= 0)
-    fig.add_trace(go.Scatter(x=price.index[le], y=price[le], mode="markers", name="Long entry",
-        marker=dict(symbol="triangle-up", size=12, color=THEME.long_color, line=dict(width=1, color="#fff"))))
-    fig.add_trace(go.Scatter(x=price.index[se], y=price[se], mode="markers", name="Short entry",
-        marker=dict(symbol="triangle-down", size=12, color=THEME.short_color, line=dict(width=1, color="#fff"))))
+def add_trade_markers(fig, price, ledger):
+    """Plot entry AND exit markers from the trade ledger so they match the table.
+
+    Long entry ▲ / long exit ✕ (teal); short entry ▼ / short exit ✕ (coral).
+    """
+    if ledger is None or ledger.empty:
+        return
+    price = price.copy()
+    price.index = pd.to_datetime(price.index)
+
+    def _price_at(dates):
+        idx = pd.to_datetime(pd.Series(list(dates)))
+        return [float(price.reindex([d]).ffill().iloc[-1]) if d in price.index
+                else float(price.asof(d)) for d in idx]
+
+    longs = ledger[ledger["side"] == "LONG"]
+    shorts = ledger[ledger["side"] == "SHORT"]
+    specs = [
+        (longs["entry_date"], "triangle-up", THEME.long_color, "Long entry"),
+        (longs["exit_date"], "x", THEME.long_color, "Long exit"),
+        (shorts["entry_date"], "triangle-down", THEME.short_color, "Short entry"),
+        (shorts["exit_date"], "x", THEME.short_color, "Short exit"),
+    ]
+    for dates, sym, color, name in specs:
+        if len(dates) == 0:
+            continue
+        xs = pd.to_datetime(list(dates))
+        ys = _price_at(dates)
+        fig.add_trace(go.Scatter(x=xs, y=ys, mode="markers", name=name,
+            marker=dict(symbol=sym, size=11, color=color, line=dict(width=1, color="#fff"))))
 
 
 # ----------------------------------------------------------------------------
@@ -292,6 +330,7 @@ def main():
     # --- BACKTEST ----------------------------------------------------------
     with tabs[0]:
         results = {REGISTRY[k].label: run_one(k) for k in keys}
+        log_eq = st.checkbox("Log scale", False, key="log_eq", help=HELP["logscale"])
         fig = go.Figure()
         for label, (res, _) in results.items():
             fig.add_trace(go.Scatter(x=res.equity.index, y=res.equity, mode="lines", name=label))
@@ -299,26 +338,28 @@ def main():
         fig.add_trace(go.Scatter(x=bench_eq.index, y=bench_eq, mode="lines",
             name=f"Buy&Hold {instrument}", line=dict(color=THEME.muted, dash="dot")))
         fig.update_layout(title=f"EQUITY CURVE — {instrument}")
-        st.plotly_chart(style_fig(fig), use_container_width=True)
+        st.plotly_chart(style_fig(fig, log_y=log_eq), use_container_width=True)
 
         st.markdown(section("Signals & indicators", 1), unsafe_allow_html=True)
         sig_label = st.selectbox("Strategy to inspect", list(results))
         sig_res, sig_strat = results[sig_label]
+        ledger = extract_trades(sig_res.position, ohlcv["close"])
+        log_px = st.checkbox("Log scale", False, key="log_px", help=HELP["logscale"])
         pfig = go.Figure()
         pfig.add_trace(go.Scatter(x=ohlcv.index, y=ohlcv["close"], mode="lines",
             name=instrument, line=dict(color="#ffffff", width=1.5)))
         for i, (name, s) in enumerate(sig_strat.indicator_lines(ohlcv).items()):
             pfig.add_trace(go.Scatter(x=s.index, y=s, mode="lines", name=name,
                 line=dict(width=1, color=THEME.series[(i + 1) % len(THEME.series)]), opacity=0.85))
-        add_trade_markers(pfig, ohlcv["close"], sig_res.position)
-        pfig.update_layout(title=f"{instrument} — price, indicators & entries ({sig_label})")
-        st.plotly_chart(style_fig(pfig, height=480), use_container_width=True)
+        add_trade_markers(pfig, ohlcv["close"], ledger)
+        pfig.update_layout(title=f"{instrument} — price, indicators & entries/exits ({sig_label})")
+        st.plotly_chart(style_fig(pfig, height=480, log_y=log_px), use_container_width=True)
 
         st.markdown(section("Trade details", 2), unsafe_allow_html=True)
-        ledger = extract_trades(sig_res.position, ohlcv["close"])
         if ledger.empty:
             st.info("No trades for this strategy/period.")
         else:
+            st.caption("Each row is one round-trip; markers on the chart above match these rows.")
             st.dataframe(ledger, use_container_width=True, height=260)
             st.download_button("Export trades CSV", ledger.to_csv(index=False),
                                file_name=f"trades_{instrument}_{sig_label}.csv")
@@ -443,6 +484,19 @@ def main():
     with tabs[3]:
         st.markdown(section("Monte Carlo simulation", 0), unsafe_allow_html=True)
         st.caption(HELP["montecarlo"])
+        with st.expander("How does this work? (methodology)"):
+            st.markdown(
+                "Monte Carlo here is a **block bootstrap of the strategy's realized "
+                "daily returns** — not a re-run of the price model:\n\n"
+                "1. Take the selected strategy's actual daily return series (real OR "
+                "synthetic — same procedure either way).\n"
+                "2. Resample it in contiguous **blocks** (default 20 bars) to preserve "
+                "short-term autocorrelation, building one alternative ordering of the "
+                "same returns.\n"
+                "3. Repeat N times → a distribution of equity paths, Sharpe, drawdown, CAGR.\n\n"
+                "It does **not** reseed synthetic data or invent new prices — it reshuffles "
+                "the outcomes you actually got, answering: *how much of my result was "
+                "ordering/luck?* A wide spread = luck-sensitive; a tight one = robust.")
         mk = st.selectbox("Strategy", [k for k in keys if not REGISTRY[k].cross_sectional] or keys,
                           format_func=lambda k: REGISTRY[k].label, key="mc")
         c1, c2, c3 = st.columns(3)
@@ -459,7 +513,7 @@ def main():
                 pf = go.Figure()
                 for col in list(paths.columns)[:int(show_paths)]:
                     pf.add_trace(go.Scatter(y=paths[col], mode="lines",
-                        line=dict(width=0.5, color=THEME.teal), opacity=0.12, showlegend=False))
+                        line=dict(width=0.6, color=THEME.teal), opacity=0.22, showlegend=False))
                 pf.add_trace(go.Scatter(y=paths.median(axis=1), mode="lines",
                     name="median", line=dict(width=2.5, color=THEME.mustard)))
                 pf.add_trace(go.Scatter(y=res.equity.reset_index(drop=True), mode="lines",
@@ -473,10 +527,13 @@ def main():
                 hist.update_layout(title="BOOTSTRAP SHARPE DISTRIBUTION")
                 st.plotly_chart(style_fig(hist, height=320), use_container_width=True)
                 summ = montecarlo.summarize(boot)
+                st.caption("Each metric shows **p5 / p50 / p95** across all simulations "
+                           "— pessimistic / median / optimistic.")
                 cols = st.columns(3)
                 for i, (m, q) in enumerate(summ.items()):
-                    cols[i % 3].metric(f"{m} p5/p50/p95",
-                                       f"{q['p5']:.2f} / {q['p50']:.2f} / {q['p95']:.2f}")
+                    cols[i % 3].metric(f"{m}  (p5 / p50 / p95)",
+                                       f"{q['p5']:.2f} / {q['p50']:.2f} / {q['p95']:.2f}",
+                                       help=HELP["mc_pct"])
             else:
                 st.info("Not enough data for Monte Carlo on this selection.")
 
@@ -490,9 +547,9 @@ def main():
             res = run_one(kk)[0]
             kc = kelly.kelly_continuous(res.returns)
             c1, c2, c3 = st.columns(3)
-            c1.metric("Full Kelly leverage", f"{kc['full']:.2f}×")
-            c2.metric("Half Kelly", f"{kc['half']:.2f}×")
-            c3.metric("Quarter Kelly", f"{kc['quarter']:.2f}×")
+            c1.metric("Full Kelly leverage", f"{kc['full']:.2f}×", help=HELP["kelly_full"])
+            c2.metric("Half Kelly", f"{kc['half']:.2f}×", help=HELP["kelly_half"])
+            c3.metric("Quarter Kelly", f"{kc['quarter']:.2f}×", help=HELP["kelly_quarter"])
             half_dollars = max(0.0, kc["half"]) * bt.capital
             st.write(f"Half-Kelly on ${bt.capital:,.0f} capital ≈ **${half_dollars:,.0f}** notional exposure.")
             st.caption("Continuous Kelly = mean/variance of returns. Full Kelly is "
@@ -513,28 +570,53 @@ def main():
         st.caption(HELP["corr"])
         chosen = st.multiselect("Strategies to compare", [REGISTRY[k].label for k in keys],
                                 default=[REGISTRY[k].label for k in keys])
+        underlyings = st.multiselect("Add underlyings (real tickers)",
+                                     ["SPY", "QQQ", "IWM", "TLT", "GLD", "HYG", "UUP", "USO"],
+                                     default=[], help=HELP["corr_under"])
         ck = [label_to_key(l) for l in chosen if not REGISTRY[label_to_key(l)].cross_sectional]
-        if len(ck) >= 2:
-            res = {REGISTRY[k].label: run_one(k)[0] for k in ck}
-            corr = return_correlation(res)
+        series = {REGISTRY[k].label: run_one(k)[0].returns for k in ck}
+        for u in underlyings:
+            try:
+                up = providers.get_prices(u, start=cfg["start"] or None, end=cfg["end"] or None)
+                series[u] = up["close"].pct_change()
+            except Exception as e:
+                st.warning(f"{u}: {e}")
+        if len(series) >= 2:
+            corr = pd.DataFrame(series).dropna(how="all").corr()
             hm = go.Figure(go.Heatmap(z=corr.values, x=corr.columns, y=corr.index,
                 colorscale="RdBu", zmid=0, zmin=-1, zmax=1,
                 text=np.round(corr.values, 2), texttemplate="%{text}"))
             hm.update_layout(title="RETURN CORRELATION")
             st.plotly_chart(style_fig(hm), use_container_width=True)
         else:
-            st.info("Select 2+ single-instrument strategies to see correlations.")
+            st.info("Select 2+ series (strategies and/or underlyings) to see correlations.")
 
         st.markdown(section("Walk-forward (IS vs OOS)", 1), unsafe_allow_html=True)
         st.caption(HELP["walkforward"])
+        st.caption(HELP["wf_color"])
         wf_keys = [k for k in keys if not REGISTRY[k].cross_sectional]
         if wf_keys:
-            wf_key = st.selectbox("Rule", wf_keys, format_func=lambda k: REGISTRY[k].label, key="wf")
+            cwf1, cwf2 = st.columns(2)
+            wf_key = cwf1.selectbox("Rule", wf_keys, format_func=lambda k: REGISTRY[k].label, key="wf")
+            n_splits = int(cwf2.number_input("OOS windows (splits)", 2, 10, 4, 1,
+                           help="How many sequential out-of-sample windows to test."))
             strat = make_strategy(REGISTRY[wf_key], cfg["params"].get(wf_key, {}), tf)
-            wf = walk_forward(strat, ohlcv, n_splits=4, bt=bt, risk=risk)
+            wf = walk_forward(strat, ohlcv, n_splits=n_splits, bt=bt, risk=risk)
             if not wf.empty:
-                st.dataframe(wf.style.format({"IS_Sharpe": "{:.2f}", "OOS_Sharpe": "{:.2f}"}),
-                             use_container_width=True)
+                def _is_color(v):
+                    c = THEME.long_color if v > 0.5 else (THEME.mustard if v > 0 else THEME.short_color)
+                    return f"color:{c}; font-weight:700"
+
+                def _oos_row(row):
+                    # OOS holds up if it keeps >=70% of a positive IS Sharpe
+                    holds = row["OOS_Sharpe"] >= 0.7 * row["IS_Sharpe"] and row["IS_Sharpe"] > 0
+                    col = THEME.long_color if holds else THEME.short_color
+                    return ["", "", "", _is_color(row["IS_Sharpe"]), f"color:{col}; font-weight:700"]
+
+                styler = (wf.style
+                          .format({"IS_Sharpe": "{:.2f}", "OOS_Sharpe": "{:.2f}"})
+                          .apply(_oos_row, axis=1))
+                st.dataframe(styler, use_container_width=True)
 
 
 if __name__ == "__main__":

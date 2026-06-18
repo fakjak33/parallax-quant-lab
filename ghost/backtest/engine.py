@@ -60,6 +60,11 @@ def run_single(
     elif bt.direction == "short":
         position = position.clip(upper=0.0)
 
+    # optional execution delay (wait N bars before acting on a signal)
+    if bt.use_delay and (bt.entry_delay or bt.exit_delay):
+        from .execution import apply_delay
+        position = apply_delay(position, bt.entry_delay, bt.exit_delay)
+
     # ATR stop/take-profit overlay
     position, events = apply_atr_overlay(position, ohlcv.reindex(forecast.index), risk)
 
