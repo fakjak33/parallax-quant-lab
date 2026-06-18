@@ -46,11 +46,18 @@ def run_single(
 
     close = ohlcv["close"].reindex(forecast.index).ffill()
 
-    # forecast -> vol-targeted position in units
+    # forecast -> position in units (vol-targeted, or fixed notional if disabled)
     position = position_from_forecast(
         forecast, close, capital=bt.capital,
         target_vol=bt.target_vol, vol_span=bt.vol_lookback,
+        use_vol_target=bt.use_vol_target,
     )
+
+    # direction filter: long-only / short-only
+    if bt.direction == "long":
+        position = position.clip(lower=0.0)
+    elif bt.direction == "short":
+        position = position.clip(upper=0.0)
 
     # ATR stop/take-profit overlay
     position, events = apply_atr_overlay(position, ohlcv.reindex(forecast.index), risk)

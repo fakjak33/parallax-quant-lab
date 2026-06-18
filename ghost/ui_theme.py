@@ -1,4 +1,8 @@
-"""Ghost in the Shell visual theme: CSS injection + Plotly layout helpers."""
+"""Parallax visual theme: modernist, minimalist, black + retro pastel.
+
+CSS injection plus Plotly layout helpers. Bold Archivo display type, clean
+Inter body, near-black canvas, retro-pantone accents.
+"""
 
 from __future__ import annotations
 
@@ -8,73 +12,99 @@ from .config import THEME
 
 CSS = f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=JetBrains+Mono:wght@400;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Archivo:wght@600;700;800;900&family=Inter:wght@400;500;600&display=swap');
 
 .stApp {{
-    background:
-        radial-gradient(circle at 20% 0%, #0a1c20 0%, {THEME.bg} 55%),
-        repeating-linear-gradient(0deg, transparent 0 3px, rgba(35,224,208,0.025) 3px 4px);
+    background: {THEME.bg};
     color: {THEME.text};
-    font-family: {THEME.font_mono};
+    font-family: {THEME.font_body};
 }}
 h1, h2, h3, h4 {{
-    font-family: {THEME.font_mono};
-    color: {THEME.teal};
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    text-shadow: 0 0 8px rgba(35,224,208,0.45);
+    font-family: {THEME.font_display};
+    font-weight: 800;
+    color: {THEME.text};
+    letter-spacing: -0.02em;
+    text-transform: none;
 }}
-h1 {{ border-bottom: 1px solid {THEME.grid}; padding-bottom: 0.3em; }}
+h1 {{ font-weight: 900; }}
 section[data-testid="stSidebar"] {{
     background: {THEME.panel};
     border-right: 1px solid {THEME.grid};
 }}
-.stButton>button {{
-    background: transparent;
-    color: {THEME.teal};
-    border: 1px solid {THEME.teal};
-    border-radius: 0;
-    font-family: {THEME.font_mono};
-    letter-spacing: 0.15em;
+section[data-testid="stSidebar"] h2,
+section[data-testid="stSidebar"] h3 {{
+    font-size: 0.8rem;
     text-transform: uppercase;
-    transition: all 0.15s ease;
+    letter-spacing: 0.14em;
+    color: {THEME.teal};
+    font-weight: 700;
 }}
-.stButton>button:hover {{
+.stButton>button {{
     background: {THEME.teal};
     color: {THEME.bg};
-    box-shadow: 0 0 14px rgba(35,224,208,0.6);
+    border: none;
+    border-radius: 2px;
+    font-family: {THEME.font_display};
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    transition: transform 0.1s ease, filter 0.1s ease;
 }}
-[data-testid="stMetricValue"] {{ color: {THEME.cyan}; font-family: {THEME.font_mono}; }}
-[data-testid="stMetricLabel"] {{ color: {THEME.muted}; letter-spacing: 0.1em; }}
-.ghost-tag {{
-    color: {THEME.amber};
-    font-size: 0.75em;
-    letter-spacing: 0.3em;
+.stButton>button:hover {{ filter: brightness(1.1); transform: translateY(-1px); }}
+[data-testid="stMetricValue"] {{
+    color: {THEME.text};
+    font-family: {THEME.font_display};
+    font-weight: 800;
+}}
+[data-testid="stMetricLabel"] {{
+    color: {THEME.muted};
     text-transform: uppercase;
+    letter-spacing: 0.1em;
+    font-size: 0.7rem;
+}}
+.stTabs [data-baseweb="tab-list"] {{ gap: 4px; border-bottom: 1px solid {THEME.grid}; }}
+.stTabs [data-baseweb="tab"] {{
+    font-family: {THEME.font_display};
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: {THEME.muted};
+    background: transparent;
+}}
+.stTabs [aria-selected="true"] {{ color: {THEME.text}; border-bottom: 2px solid {THEME.coral}; }}
+.parallax-tag {{
+    color: {THEME.muted};
+    font-size: 0.8rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-weight: 500;
 }}
 .stDataFrame {{ border: 1px solid {THEME.grid}; }}
 </style>
 """
 
 BANNER = f"""
-<div style="font-family:{THEME.font_mono}; line-height:1.15; color:{THEME.teal};
-            text-shadow:0 0 10px rgba(35,224,208,0.5); margin-bottom:0.2em;">
-<span style="font-size:2.4em; font-weight:700;">G H O S T</span><br>
-<span class="ghost-tag">// systematic strategy R&amp;D lab &nbsp;·&nbsp; section-9 quant division</span>
+<div style="margin-bottom:0.4em;">
+  <div style="display:flex; align-items:baseline; gap:0.6rem; font-family:{THEME.font_display};">
+    <span style="font-size:3rem; font-weight:900; letter-spacing:-0.04em; color:{THEME.text};">PARALLAX</span>
+    <span style="display:inline-block; width:14px; height:14px; background:{THEME.coral};"></span>
+    <span style="display:inline-block; width:14px; height:14px; background:{THEME.mustard};"></span>
+    <span style="display:inline-block; width:14px; height:14px; background:{THEME.teal};"></span>
+  </div>
+  <div class="parallax-tag">systematic strategy R&amp;D lab</div>
 </div>
 """
 
 
-def style_fig(fig: go.Figure, height: int = 420) -> go.Figure:
-    """Apply the dark cyber theme to a Plotly figure."""
+def style_fig(fig: go.Figure, height: int = 440) -> go.Figure:
+    """Apply the Parallax dark-modernist theme to a Plotly figure."""
     fig.update_layout(
         template="plotly_dark",
         height=height,
         paper_bgcolor=THEME.bg,
         plot_bgcolor=THEME.panel,
-        font=dict(family="JetBrains Mono, monospace", color=THEME.text, size=12),
+        font=dict(family="Inter, sans-serif", color=THEME.text, size=12),
+        title_font=dict(family="Archivo, sans-serif", size=16, color=THEME.text),
         colorway=list(THEME.series),
-        margin=dict(l=50, r=20, t=40, b=40),
+        margin=dict(l=55, r=24, t=48, b=44),
         legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor=THEME.grid, borderwidth=1),
         xaxis=dict(gridcolor=THEME.grid, zerolinecolor=THEME.grid),
         yaxis=dict(gridcolor=THEME.grid, zerolinecolor=THEME.grid),

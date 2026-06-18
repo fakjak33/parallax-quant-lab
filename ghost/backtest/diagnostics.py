@@ -10,6 +10,22 @@ from .engine import run_strategy
 from . import metrics
 
 
+def beta_and_correlation(strategy_returns: pd.Series, underlying_close: pd.Series) -> dict[str, float]:
+    """Beta and correlation of a strategy's returns vs the underlying ETF.
+
+    Beta = cov(strat, mkt) / var(mkt); correlation is Pearson r. Aligned on
+    common dates with NaNs dropped.
+    """
+    mkt = underlying_close.pct_change()
+    df = pd.concat([strategy_returns.rename("strat"), mkt.rename("mkt")], axis=1).dropna()
+    if len(df) < 3 or df["mkt"].var() < 1e-18:
+        return {"beta": 0.0, "correlation": 0.0}
+    cov = df["strat"].cov(df["mkt"])
+    beta = cov / df["mkt"].var()
+    corr = df["strat"].corr(df["mkt"])
+    return {"beta": float(beta), "correlation": float(corr)}
+
+
 def return_correlation(results: dict) -> pd.DataFrame:
     """Correlation matrix of strategy *return* streams.
 

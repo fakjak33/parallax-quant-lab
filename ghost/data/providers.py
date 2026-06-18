@@ -16,6 +16,19 @@ from ..config import DATA_CACHE
 # Canonical OHLCV column order used throughout the lab.
 OHLCV = ["open", "high", "low", "close", "volume"]
 
+# Pandas resample rules for the UI timeframe selector.
+TIMEFRAMES = {"Daily": "D", "Weekly": "W-FRI", "Monthly": "ME"}
+
+
+def resample_ohlcv(df: pd.DataFrame, rule: str) -> pd.DataFrame:
+    """Resample an OHLCV frame to a coarser timeframe (e.g. 'W-FRI', 'ME')."""
+    if rule in (None, "D"):
+        return df
+    agg = {"open": "first", "high": "max", "low": "min",
+           "close": "last", "volume": "sum"}
+    use = {k: v for k, v in agg.items() if k in df.columns}
+    return df.resample(rule).agg(use).dropna(how="any")
+
 
 def _cache_path(ticker: str) -> Path:
     return DATA_CACHE / f"{ticker.upper().replace('/', '_')}.parquet"

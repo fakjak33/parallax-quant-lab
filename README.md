@@ -1,25 +1,35 @@
-# GHOST — Systematic Trading Strategy R&D Lab
+# PARALLAX — Systematic Trading Strategy R&D Lab
 
-> *Section-9 quant division.* A plug-and-play backtesting lab for developing
-> systematic strategies the **Robert Carver** way: continuous volatility-scaled
-> forecasts, vol-targeted sizing, forecast combination, and testing a whole
-> **spectrum** of variants at once to avoid overfitting. Styled after *Ghost in
-> the Shell*.
+> A plug-and-play backtesting lab for developing systematic strategies the
+> **Robert Carver** way: continuous volatility-scaled forecasts, vol-targeted
+> sizing, forecast combination, and testing a whole **spectrum** of variants at
+> once to avoid overfitting. Modernist, minimalist UI — black canvas with a
+> retro pantone palette.
 
 ## Features
 
 - **Real + synthetic data** — yfinance (free, cached to parquet) and synthetic
   generators (GBM, trending, mean-reverting, regime, fat-tailed) with known
-  ground truth for validating strategies.
+  ground truth for validating strategies. Adjustable **timeframe** (daily /
+  weekly / monthly) and date window.
+- **2,200+ ETFs** — bundled categorized ETF master list plus curated universes;
+  type any yfinance ticker too.
 - **Carver forecast pipeline** — raw rule → vol-normalized → scaled to avg |10|
-  → capped ±20 → vol-targeted position sizing → forecast combination (FDM).
+  → capped ±20 → position sizing → forecast combination (FDM). Volatility
+  targeting can be **toggled off** for fixed-notional sizing.
+- **Full control per strategy** — edit *every* parameter of each rule, choose
+  **which** parameter the spectrum sweeps, and set direction
+  (**both / long-only / short-only**).
 - **Strategy library** (plug-and-play, auto-registered):
   EMA (EWMAC), SMA, Guppy MMA, MA crossover, time-series momentum,
   cross-sectional momentum, Donchian breakout, mean reversion, carry proxy.
-- **Spectrum testing** — sweep a parameter across a family; spot robust
+- **Trade visualization** — long/short entry markers on the price chart.
+- **Spectrum testing** — sweep any parameter across a family; spot robust
   *plateaus* vs overfit *spikes*; deflated-Sharpe penalty over the trial count.
-- **Overfitting defenses** — return correlation matrix, walk-forward IS/OOS,
-  Monte Carlo block-bootstrap distributions, Probabilistic & Deflated Sharpe.
+- **Diagnostics** — multi-select return-correlation matrix, **beta &
+  correlation to the underlying ETF**, walk-forward IS/OOS.
+- **Overfitting defenses** — Monte Carlo block-bootstrap distributions,
+  Probabilistic & Deflated Sharpe.
 - **ATR risk overlays** — optional trailing stop-loss and take-profit (k·ATR),
   with an exportable trade blotter.
 - **Realism** — transaction costs, slippage, next-day execution (no look-ahead).
@@ -67,7 +77,7 @@ directionally correct.
 ## Layout
 
 ```
-app.py              Streamlit dashboard (GITS theme)
+app.py              Streamlit dashboard (Parallax theme)
 ghost/
   config.py         defaults, theme
   data/             providers (yfinance+cache), synthetic, universe

@@ -36,6 +36,8 @@ class BacktestConfig:
     slippage_bps: float = 0.5       # half-spread slippage in bps
     vol_lookback: int = VOL_LOOKBACK
     trading_days: int = TRADING_DAYS
+    use_vol_target: bool = True     # if False, use fixed notional sizing
+    direction: str = "both"         # "both" | "long" | "short"
 
 
 @dataclass
@@ -50,23 +52,34 @@ class RiskConfig:
     trailing_stop: bool = True
 
 
-# --- Ghost in the Shell theme ---------------------------------------------
+# --- Parallax theme: black base + retro pastel/pantone accents ------------
+# Palette sampled from the "Retro Color Palette" reference: navy, teal, mauve,
+# mint, coral, orange, mustard, cream. Modernist & minimalist on near-black.
 @dataclass(frozen=True)
 class Theme:
-    bg: str = "#05080a"
-    panel: str = "#0a1014"
-    grid: str = "#10242b"
-    teal: str = "#23e0d0"
-    cyan: str = "#4ff5ff"
-    amber: str = "#ffb347"
-    magenta: str = "#ff4f87"
-    text: str = "#cfeef0"
-    muted: str = "#5c7a80"
-    font_mono: str = "'JetBrains Mono', 'Share Tech Mono', 'Consolas', monospace"
-    # ordered palette for multi-series plots
+    bg: str = "#0a0a0a"             # near-black base
+    panel: str = "#141414"          # raised panel
+    grid: str = "#262626"           # subtle gridlines
+    teal: str = "#2a9d8f"           # primary accent
+    coral: str = "#e34a33"          # long / positive emphasis
+    orange: str = "#ee7733"
+    mustard: str = "#f4b860"
+    mauve: str = "#a05c7b"
+    mint: str = "#84c7a8"
+    navy: str = "#1f6f8b"
+    cream: str = "#ece5d8"
+    text: str = "#ece5d8"           # cream text on black
+    muted: str = "#8a847a"
+    # bold modernist display + clean sans body
+    font_display: str = "'Archivo', 'Helvetica Neue', Arial, sans-serif"
+    font_body: str = "'Inter', 'Helvetica Neue', Arial, sans-serif"
+    # accent roles
+    long_color: str = "#2a9d8f"     # teal-green for longs
+    short_color: str = "#e34a33"    # coral-red for shorts
+    # ordered palette for multi-series plots (retro pantone set)
     series: tuple = (
-        "#23e0d0", "#ffb347", "#4ff5ff", "#ff4f87",
-        "#9d7bff", "#7dff9b", "#ff8c42", "#5ab0ff",
+        "#2a9d8f", "#e34a33", "#f4b860", "#84c7a8",
+        "#a05c7b", "#ee7733", "#1f6f8b", "#ece5d8",
     )
 
 

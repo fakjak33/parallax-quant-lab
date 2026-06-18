@@ -41,6 +41,38 @@ def test_spectrum_produces_table():
     assert (table["DSR"] <= table["PSR"] + 1e-9).all()
 
 
+def test_direction_filter():
+    from ghost.config import BacktestConfig
+    df = generate("gbm", n_days=600, seed=9)
+    lo = run_strategy(REGISTRY["ema"](), df, bt=BacktestConfig(direction="long"))
+    so = run_strategy(REGISTRY["ema"](), df, bt=BacktestConfig(direction="short"))
+    assert lo.position.min() >= -1e-9
+    assert so.position.max() <= 1e-9
+
+
+def test_vol_target_toggle_changes_pl():
+    from ghost.config import BacktestConfig
+    df = generate("trending", n_days=800, seed=9)
+    on = run_strategy(REGISTRY["ema"](), df, bt=BacktestConfig(use_vol_target=True))
+    off = run_strategy(REGISTRY["ema"](), df, bt=BacktestConfig(use_vol_target=False))
+    assert abs(on.equity.iloc[-1] - off.equity.iloc[-1]) > 1.0
+
+
+def test_pl_changes_with_seed():
+    e1 = run_strategy(REGISTRY["ema"](), generate("trending", n_days=800, seed=1)).equity.iloc[-1]
+    e2 = run_strategy(REGISTRY["ema"](), generate("trending", n_days=800, seed=2)).equity.iloc[-1]
+    assert abs(e1 - e2) > 1.0
+
+
+def test_beta_correlation():
+    from ghost.backtest.diagnostics import beta_and_correlation
+    df = generate("gbm", n_days=600, seed=4)
+    res = run_strategy(REGISTRY["ema"](), df)
+    bc = beta_and_correlation(res.returns, df["close"])
+    assert set(bc) == {"beta", "correlation"}
+    assert -1.0 <= bc["correlation"] <= 1.0
+
+
 def test_manual_sharpe_matches():
     r = pd.Series(np.random.default_rng(0).normal(0.0005, 0.01, 1000))
     manual = r.mean() / r.std(ddof=1) * np.sqrt(256)
