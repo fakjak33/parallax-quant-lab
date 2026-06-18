@@ -96,9 +96,9 @@ class Theme:
     cream: str = "#ffffff"
     text: str = "#ffffff"           # pure white text
     muted: str = "#b8b8b8"          # brighter muted
-    # unified modernist geometric font across the whole app
-    font_display: str = "'Space Grotesk', 'Archivo', Helvetica, Arial, sans-serif"
-    font_body: str = "'Space Grotesk', 'Inter', Helvetica, Arial, sans-serif"
+    # vintage grainy monospace "code" font across the whole app
+    font_display: str = "'VT323', 'Share Tech Mono', 'Courier New', monospace"
+    font_body: str = "'Share Tech Mono', 'VT323', 'Courier New', monospace"
     # accent roles
     long_color: str = "#2ec4b6"     # teal-green for longs
     short_color: str = "#ff5a3c"    # coral-red for shorts

@@ -12,14 +12,37 @@ from .config import THEME
 
 CSS = f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=VT323&family=Share+Tech+Mono&display=swap');
 
-/* unified modernist font + pure black canvas + bright white text */
-html, body, .stApp, [class*="css"] {{
-    font-family: {THEME.font_display} !important;
+/* unified vintage monospace 'code' font + pure black canvas + bright text */
+html, body, .stApp, [class*="css"],
+input, button, select, textarea, .stMarkdown, p, label, span, div, td, th {{
+    font-family: {THEME.font_body} !important;
 }}
 .stApp {{ background: {THEME.bg}; color: {THEME.text}; }}
 .stApp, .stMarkdown, p, label, span, div {{ color: {THEME.text}; }}
+
+/* CRT grain / scanline overlay for a vintage, grainy feel */
+.stApp::before {{
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9999;
+    opacity: 0.06;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}}
+.stApp::after {{
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 9998;
+    opacity: 0.35;
+    background: repeating-linear-gradient(
+        0deg, rgba(0,0,0,0) 0px, rgba(0,0,0,0) 2px,
+        rgba(0,0,0,0.25) 3px, rgba(0,0,0,0) 4px);
+}}
 
 h1, h2, h3, h4 {{
     font-family: {THEME.font_display};
@@ -160,8 +183,8 @@ BANNER = f"""
 <div style="display:flex; align-items:center; gap:1rem; margin-bottom:0.4em;">
   <div style="line-height:0;">{_logo_svg(64)}</div>
   <div>
-    <div style="font-family:{THEME.font_display}; font-size:3rem; font-weight:700;
-                letter-spacing:-0.03em; color:#ffffff; line-height:1;">PARALLAX</div>
+    <div style="font-family:{THEME.font_display}; font-size:4rem; font-weight:400;
+                letter-spacing:0.18em; color:#ffffff; line-height:1;">PARALLAX</div>
     <div class="parallax-tag">systematic strategy R&amp;D lab</div>
   </div>
 </div>
@@ -190,8 +213,8 @@ def style_fig(fig: go.Figure, height: int = 440, transparent: bool = True) -> go
         height=height,
         paper_bgcolor=bg,
         plot_bgcolor=bg,
-        font=dict(family="Space Grotesk, sans-serif", color=THEME.text, size=12),
-        title_font=dict(family="Space Grotesk, sans-serif", size=16, color="#ffffff"),
+        font=dict(family="Share Tech Mono, monospace", color=THEME.text, size=12),
+        title_font=dict(family="VT323, Share Tech Mono, monospace", size=20, color="#ffffff"),
         colorway=list(THEME.series),
         margin=dict(l=55, r=24, t=48, b=44),
         legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor=THEME.grid, borderwidth=1),
