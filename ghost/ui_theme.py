@@ -62,7 +62,7 @@ section[data-testid="stSidebar"] {{
     color: var(--sec, {THEME.teal}) !important;
 }}
 
-/* buttons: square, bordered, palette-varied */
+/* buttons: square, bordered, gradient on hover */
 .stButton>button, .stDownloadButton>button {{
     border-radius: 0 !important;
     border: 2px solid {THEME.border} !important;
@@ -74,7 +74,8 @@ section[data-testid="stSidebar"] {{
     transition: all 0.1s ease;
 }}
 .stButton>button:hover, .stDownloadButton>button:hover {{
-    background: {THEME.teal}; color: #000; border-color: {THEME.teal} !important;
+    background: linear-gradient(90deg, {THEME.teal}, {THEME.mustard}, {THEME.coral});
+    color: #000; border-color: {THEME.teal} !important;
 }}
 
 /* multiselect tags cycle palette colors */
@@ -106,7 +107,10 @@ section[data-testid="stSidebar"] {{
     padding: 10px 22px;
     margin-right: 4px;
 }}
-.stTabs [aria-selected="true"] {{ color: #000 !important; background: {THEME.teal}; }}
+.stTabs [aria-selected="true"] {{
+    color: #000 !important;
+    background: linear-gradient(120deg, {THEME.teal}, {THEME.mint}, {THEME.mustard});
+}}
 
 /* metrics */
 [data-testid="stMetric"] {{ border: 2px solid {THEME.border}; padding: 0.6rem; background: {THEME.panel}; }}
@@ -123,28 +127,32 @@ section[data-testid="stSidebar"] {{
 </style>
 """
 
-# --- Inline vector logo: concentric "parallax" P in white, transparent bg ---
-def _logo_svg(size: int = 60) -> str:
-    """Nested, offset rounded-square 'P' giving the parallax-tunnel effect,
-    rendered in white with graduated opacity (transparent background)."""
+# --- Inline vector logo: concentric "parallax" tunnel, palette gradient -----
+def _logo_svg(size: int = 64) -> str:
+    """Nested concentric rounded-square outlines forming a parallax-tunnel
+    'P', stroked with the retro palette (transparent background, no fill).
+
+    Built purely from open strokes so the centre stays transparent — no solid
+    rectangle in the middle.
+    """
+    palette = [THEME.teal, THEME.mint, THEME.mustard, THEME.orange,
+               THEME.coral, THEME.mauve]
+    n = len(palette)
     layers = []
-    n = 6
-    for i in range(n):
-        op = 0.30 + 0.70 * (i / (n - 1))      # fade outer -> inner
-        inset = 4 + i * 5
-        sw = 3.2
-        # a 'P' built from a rounded-rect bowl; concentric insets create depth
+    for i, color in enumerate(palette):
+        inset = 5 + i * 6.5            # concentric inward steps
+        w = 100 - 2 * inset
+        # offset each ring slightly up-left to fake 3D depth (parallax)
+        ox, oy = -i * 1.2, -i * 1.2
         layers.append(
-            f'<rect x="{inset}" y="{inset}" width="{100-2*inset}" height="{100-2*inset}" '
-            f'rx="10" ry="10" fill="none" stroke="#ffffff" stroke-opacity="{op:.2f}" '
-            f'stroke-width="{sw}"/>'
+            f'<rect x="{inset + ox:.1f}" y="{inset + oy:.1f}" '
+            f'width="{w:.1f}" height="{w:.1f}" rx="11" ry="11" fill="none" '
+            f'stroke="{color}" stroke-width="3.4" stroke-linejoin="round"/>'
         )
-    # the descending stem of the P (left vertical), white solid
-    stem = ('<rect x="20" y="20" width="9" height="68" fill="#ffffff"/>')
     inner = "".join(layers)
     return (
-        f'<svg width="{size}" height="{size}" viewBox="0 0 100 100" '
-        f'xmlns="http://www.w3.org/2000/svg" fill="none">{inner}{stem}</svg>'
+        f'<svg width="{size}" height="{size}" viewBox="-6 -6 112 112" '
+        f'xmlns="http://www.w3.org/2000/svg" fill="none">{inner}</svg>'
     )
 
 
@@ -161,9 +169,16 @@ BANNER = f"""
 
 
 def section(label: str, idx: int = 0) -> str:
-    """Return HTML for a palette-accented section header (cycles colors)."""
-    color = THEME.section_colors[idx % len(THEME.section_colors)]
-    return f'<div class="parallax-sec" style="--sec:{color}">{label}</div>'
+    """Return HTML for a gradient palette-accented section header (cycles)."""
+    cols = THEME.section_colors
+    c1 = cols[idx % len(cols)]
+    c2 = cols[(idx + 1) % len(cols)]
+    grad = f"linear-gradient(90deg, {c1}, {c2})"
+    return (
+        f'<div class="parallax-sec" style="--sec:{c1}; border-image:{grad} 1; '
+        f'background:{grad}; -webkit-background-clip:text; background-clip:text; '
+        f'-webkit-text-fill-color:transparent;">{label}</div>'
+    )
 
 
 def style_fig(fig: go.Figure, height: int = 440, transparent: bool = True) -> go.Figure:

@@ -19,7 +19,7 @@ class MeanReversion(Strategy):
     key = "meanrev"
     label = "Mean Reversion (z-score)"
     params = {
-        "lookback": (20, 3, 120, 1),
+        "lookback": (20, 3, 1000, 1),
     }
     spectrum_param = "lookback"
 

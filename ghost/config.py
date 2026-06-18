@@ -25,6 +25,13 @@ VOL_LOOKBACK = 32               # span (days) for EW volatility estimate
 DEFAULT_TARGET_VOL = 0.20       # 20% annualized portfolio vol target
 DEFAULT_CAPITAL = 1_000_000.0
 
+# Trading days represented by one bar at each timeframe — used to scale
+# day-based strategy parameters when the candle frequency changes.
+TIMEFRAME_DAYS = {"Daily": 1, "Weekly": 5, "Monthly": 21}
+# Strategy parameters expressed in (trading-day) time that should be rescaled
+# to bars when the timeframe changes.
+TIME_SCALED_PARAMS = {"fast", "slow", "lookback", "smooth", "skip"}
+
 
 @dataclass
 class BacktestConfig:
@@ -36,19 +43,37 @@ class BacktestConfig:
     slippage_bps: float = 0.5       # half-spread slippage in bps
     vol_lookback: int = VOL_LOOKBACK
     trading_days: int = TRADING_DAYS
-    use_vol_target: bool = True     # if False, use fixed notional sizing
+    use_vol_target: bool = True     # back-compat flag (see sizing_mode)
     direction: str = "both"         # "both" | "long" | "short"
+    # sizing_mode: "vol_target" | "fixed_pct" | "fixed_dollar"
+    sizing_mode: str = "vol_target"
+    fixed_pct: float = 1.0          # fraction of capital deployed at full forecast
+    fixed_dollar: float = DEFAULT_CAPITAL  # $ notional at full forecast
+
+    def __post_init__(self):
+        # keep the legacy use_vol_target flag in sync with sizing_mode
+        if not self.use_vol_target and self.sizing_mode == "vol_target":
+            self.sizing_mode = "fixed_pct"
+        if self.sizing_mode != "vol_target":
+            self.use_vol_target = False
 
 
 @dataclass
 class RiskConfig:
-    """ATR-based take-profit / stop-loss overlay settings."""
+    """Stop-loss / take-profit overlay settings (ATR-based or fixed-percent)."""
 
+    # ATR-based stop/TP
     use_atr_stop: bool = False
     use_atr_tp: bool = False
     atr_period: int = 14
     atr_stop_mult: float = 3.0      # k in entry - k*ATR
     atr_tp_mult: float = 6.0        # k in entry + k*ATR
+    # fixed-percent stop/TP (alternative to ATR)
+    use_pct_stop: bool = False
+    use_pct_tp: bool = False
+    pct_stop: float = 0.10          # 10% adverse move
+    pct_tp: float = 0.20            # 20% favorable move
+    # trailing applies to whichever stop is active
     trailing_stop: bool = True
 
 

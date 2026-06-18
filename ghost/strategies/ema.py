@@ -19,8 +19,8 @@ class EMACrossover(Strategy):
     key = "ema"
     label = "EMA Trend (EWMAC)"
     params = {
-        "fast": (16, 2, 128, 1),
-        "slow": (64, 4, 256, 1),
+        "fast": (16, 2, 1000, 1),
+        "slow": (64, 4, 2000, 1),
     }
     spectrum_param = "fast"
 

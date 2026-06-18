@@ -21,8 +21,8 @@ class CrossSectionalMomentum(Strategy):
     label = "Cross-Sectional Momentum"
     cross_sectional = True
     params = {
-        "lookback": (126, 20, 378, 5),
-        "skip": (21, 0, 42, 1),   # skip most-recent days (reversal control)
+        "lookback": (126, 20, 2000, 5),
+        "skip": (21, 0, 120, 1),   # skip most-recent days (reversal control)
     }
     spectrum_param = "lookback"
 

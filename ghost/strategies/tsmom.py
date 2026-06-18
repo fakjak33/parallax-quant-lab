@@ -20,7 +20,7 @@ class TimeSeriesMomentum(Strategy):
     key = "tsmom"
     label = "Time-Series Momentum"
     params = {
-        "lookback": (90, 10, 504, 5),
+        "lookback": (90, 10, 2000, 5),
     }
     spectrum_param = "lookback"
 

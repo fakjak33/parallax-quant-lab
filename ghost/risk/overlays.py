@@ -1,10 +1,11 @@
-"""Apply ATR take-profit / stop-loss on top of a continuous position.
+"""Apply stop-loss / take-profit on top of a continuous position.
 
-The Carver position is continuous, but TP/SL are discrete events. We walk the
-series: when a new position of a given sign opens, record the entry price and
-an ATR-derived stop and target. While the stop/target is active we zero the
-position after a breach until the underlying signal flips or flattens, then
-re-arm. Returns the gated position plus an event log for the blotter.
+Supports ATR-based and fixed-percent stops & take-profits, with optional
+trailing for the stop. The Carver position is continuous, but stops/TPs are
+discrete events: when a position of a given sign opens we record the entry
+price and stop/target levels; on a breach we flatten until the underlying
+signal flips or goes flat, then re-arm. Returns the gated position plus an
+event log for the blotter.
 """
 
 from __future__ import annotations
@@ -16,17 +17,37 @@ from ..config import RiskConfig
 from .atr import atr
 
 
-def apply_atr_overlay(
+def _stop_distance(cfg: RiskConfig, atr_val: float, price: float) -> float | None:
+    """Absolute price distance for the stop, or None if no stop active."""
+    if cfg.use_atr_stop:
+        return cfg.atr_stop_mult * atr_val
+    if cfg.use_pct_stop:
+        return cfg.pct_stop * price
+    return None
+
+
+def _tp_distance(cfg: RiskConfig, atr_val: float, price: float) -> float | None:
+    """Absolute price distance for the take-profit, or None if inactive."""
+    if cfg.use_atr_tp:
+        return cfg.atr_tp_mult * atr_val
+    if cfg.use_pct_tp:
+        return cfg.pct_tp * price
+    return None
+
+
+def apply_risk_overlay(
     position: pd.Series,
     ohlcv: pd.DataFrame,
     cfg: RiskConfig,
 ) -> tuple[pd.Series, pd.DataFrame]:
-    """Gate ``position`` by ATR stop-loss / take-profit.
+    """Gate ``position`` by stop-loss / take-profit (ATR or fixed-percent).
 
     Returns (gated_position, events) where events has columns
     [date, type, price] with type in {entry, stop, take_profit}.
     """
-    if not (cfg.use_atr_stop or cfg.use_atr_tp):
+    stop_on = cfg.use_atr_stop or cfg.use_pct_stop
+    tp_on = cfg.use_atr_tp or cfg.use_pct_tp
+    if not (stop_on or tp_on):
         return position, pd.DataFrame(columns=["date", "type", "price"])
 
     close = ohlcv["close"].reindex(position.index)
@@ -41,45 +62,43 @@ def apply_atr_overlay(
     in_trade = False
     sign = 0
     entry_px = stop_px = tp_px = np.nan
-    suppressed = False  # True after a breach until signal resets
+    suppressed = False
 
     for i in range(len(pos)):
         cur_sign = int(np.sign(pos[i]))
 
-        # flat signal -> reset everything
         if cur_sign == 0:
             in_trade = False
             suppressed = False
             sign = 0
             continue
 
-        # new trade or direction flip -> (re)arm levels
         if not in_trade or cur_sign != sign:
             in_trade = True
             suppressed = False
             sign = cur_sign
             entry_px = px[i]
-            stop_px = entry_px - sign * cfg.atr_stop_mult * av[i]
-            tp_px = entry_px + sign * cfg.atr_tp_mult * av[i]
+            d_stop = _stop_distance(cfg, av[i], entry_px)
+            d_tp = _tp_distance(cfg, av[i], entry_px)
+            stop_px = entry_px - sign * d_stop if d_stop is not None else np.nan
+            tp_px = entry_px + sign * d_tp if d_tp is not None else np.nan
             events.append({"date": position.index[i], "type": "entry", "price": entry_px})
 
         if suppressed:
             out[i] = 0.0
             continue
 
-        # trailing stop ratchets in the trade's favor
-        if cfg.use_atr_stop and cfg.trailing_stop:
-            trail = px[i] - sign * cfg.atr_stop_mult * av[i]
-            stop_px = trail if sign > 0 else trail
-            stop_px = max(stop_px, entry_px - sign * cfg.atr_stop_mult * av[i]) if sign > 0 \
-                else min(stop_px, entry_px - sign * cfg.atr_stop_mult * av[i])
+        # trailing stop ratchets in the trade's favor (never loosens)
+        if stop_on and cfg.trailing_stop:
+            d_stop = _stop_distance(cfg, av[i], px[i])
+            if d_stop is not None:
+                trail = px[i] - sign * d_stop
+                stop_px = max(stop_px, trail) if sign > 0 else min(stop_px, trail)
 
-        hit_stop = cfg.use_atr_stop and (
-            (sign > 0 and px[i] <= stop_px) or (sign < 0 and px[i] >= stop_px)
-        )
-        hit_tp = cfg.use_atr_tp and (
-            (sign > 0 and px[i] >= tp_px) or (sign < 0 and px[i] <= tp_px)
-        )
+        hit_stop = stop_on and not np.isnan(stop_px) and (
+            (sign > 0 and px[i] <= stop_px) or (sign < 0 and px[i] >= stop_px))
+        hit_tp = tp_on and not np.isnan(tp_px) and (
+            (sign > 0 and px[i] >= tp_px) or (sign < 0 and px[i] <= tp_px))
 
         if hit_stop:
             out[i] = 0.0
@@ -93,3 +112,7 @@ def apply_atr_overlay(
     gated = pd.Series(out, index=position.index)
     ev_df = pd.DataFrame(events) if events else pd.DataFrame(columns=["date", "type", "price"])
     return gated, ev_df
+
+
+# Backwards-compatible alias (older callers/tests use this name).
+apply_atr_overlay = apply_risk_overlay

@@ -15,8 +15,8 @@ class SMACrossover(Strategy):
     key = "sma"
     label = "SMA Trend"
     params = {
-        "fast": (20, 2, 150, 1),
-        "slow": (100, 5, 300, 1),
+        "fast": (20, 2, 1000, 1),
+        "slow": (100, 5, 2000, 1),
     }
     spectrum_param = "fast"
 

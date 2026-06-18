@@ -49,6 +49,30 @@ def bootstrap(
     return pd.DataFrame(rows)
 
 
+def bootstrap_paths(
+    returns: pd.Series,
+    n_sims: int = 200,
+    block: int = 20,
+    capital: float = 1.0,
+    seed: int | None = 7,
+) -> pd.DataFrame:
+    """Return a DataFrame of bootstrapped *equity paths* (columns = sims).
+
+    Each column is a cumulative equity curve from a block-bootstrapped resample
+    of the daily returns, starting at ``capital``. Used to draw the fan of
+    possible outcomes behind the actual curve.
+    """
+    r = returns.replace([np.inf, -np.inf], np.nan).dropna().to_numpy()
+    if len(r) < 30:
+        return pd.DataFrame()
+    rng = np.random.default_rng(seed)
+    paths = {}
+    for s in range(n_sims):
+        sample = _block_bootstrap(r, rng, block)
+        paths[s] = capital * np.cumprod(1.0 + sample)
+    return pd.DataFrame(paths)
+
+
 def summarize(boot: pd.DataFrame) -> dict[str, dict[str, float]]:
     """5th/50th/95th percentiles per metric."""
     if boot.empty:

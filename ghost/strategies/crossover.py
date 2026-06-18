@@ -19,9 +19,9 @@ class Crossover(Strategy):
     key = "crossover"
     label = "MA Crossover (%gap)"
     params = {
-        "fast": (50, 5, 150, 1),
-        "slow": (200, 20, 400, 1),
-        "smooth": (5, 1, 30, 1),
+        "fast": (50, 5, 1000, 1),
+        "slow": (200, 20, 2000, 1),
+        "smooth": (5, 1, 100, 1),
     }
     spectrum_param = "fast"
 

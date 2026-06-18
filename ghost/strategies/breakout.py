@@ -18,8 +18,8 @@ class Breakout(Strategy):
     key = "breakout"
     label = "Donchian Breakout"
     params = {
-        "lookback": (40, 5, 252, 1),
-        "smooth": (10, 1, 60, 1),
+        "lookback": (40, 5, 1000, 1),
+        "smooth": (10, 1, 200, 1),
     }
     spectrum_param = "lookback"
 

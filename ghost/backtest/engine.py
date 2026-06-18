@@ -46,11 +46,12 @@ def run_single(
 
     close = ohlcv["close"].reindex(forecast.index).ffill()
 
-    # forecast -> position in units (vol-targeted, or fixed notional if disabled)
+    # forecast -> position in units per the selected sizing mode
     position = position_from_forecast(
         forecast, close, capital=bt.capital,
         target_vol=bt.target_vol, vol_span=bt.vol_lookback,
-        use_vol_target=bt.use_vol_target,
+        sizing_mode=bt.sizing_mode, fixed_pct=bt.fixed_pct,
+        fixed_dollar=bt.fixed_dollar,
     )
 
     # direction filter: long-only / short-only
