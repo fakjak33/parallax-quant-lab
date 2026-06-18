@@ -23,7 +23,7 @@ class CarryProxy(Strategy):
     key = "carry"
     label = "Carry (drift proxy)"
     params = {
-        "lookback": (252, 60, 504, 5),
+        "lookback": (252, 60, 2000, 5),
     }
     spectrum_param = "lookback"
 

@@ -39,28 +39,36 @@ def position_from_forecast(
     target_vol: float,
     vol_span: int = VOL_LOOKBACK,
     use_vol_target: bool = True,
+    sizing_mode: str | None = None,
+    fixed_pct: float = 1.0,
+    fixed_dollar: float | None = None,
 ) -> pd.Series:
     """Convert a capped forecast into a position in *units* (shares).
 
-    With ``use_vol_target`` (Carver default), volatility targeting:
+    ``sizing_mode`` selects how a forecast maps to size (falls back to
+    ``use_vol_target`` for back-compat):
 
-        units = (forecast / 10) * (capital * target_vol)
-                / (price_vol_annual * price)
-
-    A forecast of +10 (the average) targets the full per-instrument risk
-    budget; +20 doubles it, -10 is a full short.
-
-    With ``use_vol_target=False``, fixed-notional sizing: the position scales
-    linearly with the forecast (full forecast = full capital deployed), with
-    NO volatility scaling — so high-vol periods carry proportionally more risk.
+    - ``"vol_target"`` — Carver volatility targeting::
+          units = (forecast/10) * (capital * target_vol)
+                  / (price_vol_annual * price)
+      +10 (average forecast) targets the full per-instrument risk budget.
+    - ``"fixed_pct"`` — deploy ``fixed_pct`` of capital at full forecast,
+      scaled linearly by forecast/10. No vol scaling.
+    - ``"fixed_dollar"`` — deploy ``fixed_dollar`` notional at full forecast.
     """
-    if use_vol_target:
+    if sizing_mode is None:
+        sizing_mode = "vol_target" if use_vol_target else "fixed_pct"
+
+    if sizing_mode == "vol_target":
         price_vol_annual = ew_vol(prices, span=vol_span, annualize=True)
         risk_budget = capital * target_vol
         notional_vol_per_unit = price_vol_annual * prices
         units = (forecast / FORECAST_SCALAR_TARGET) * risk_budget / notional_vol_per_unit
-    else:
-        # forecast/10 fraction of capital as notional, converted to units
-        notional = (forecast / FORECAST_SCALAR_TARGET) * capital
+    elif sizing_mode == "fixed_dollar":
+        dollar = capital if fixed_dollar is None else fixed_dollar
+        notional = (forecast / FORECAST_SCALAR_TARGET) * dollar
+        units = notional / prices
+    else:  # fixed_pct
+        notional = (forecast / FORECAST_SCALAR_TARGET) * fixed_pct * capital
         units = notional / prices
     return units.replace([np.inf, -np.inf], np.nan).fillna(0.0)

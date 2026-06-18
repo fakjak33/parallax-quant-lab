@@ -24,7 +24,7 @@ class GMMA(Strategy):
     label = "Guppy MMA"
     params = {
         # a single 'speed' multiplier scales both ribbons for the spectrum
-        "speed": (1.0, 0.5, 3.0, 0.1),
+        "speed": (1.0, 0.5, 6.0, 0.1),
     }
     spectrum_param = "speed"
 

@@ -44,12 +44,42 @@ def equity_curve(returns: pd.Series, start: float = 1.0) -> pd.Series:
     return start * (1.0 + _clean(returns)).cumprod()
 
 
-def max_drawdown(returns: pd.Series) -> float:
+def drawdown_series(returns: pd.Series) -> pd.Series:
+    """Running drawdown (fraction below the prior peak) over time."""
     eq = equity_curve(returns)
     if eq.empty:
+        return eq
+    return eq / eq.cummax() - 1.0
+
+
+def max_drawdown(returns: pd.Series) -> float:
+    dd = drawdown_series(returns)
+    return float(dd.min()) if not dd.empty else 0.0
+
+
+def annual_vol(returns: pd.Series, periods: int = TRADING_DAYS) -> float:
+    r = _clean(returns)
+    return float(r.std(ddof=1) * np.sqrt(periods)) if len(r) > 1 else 0.0
+
+
+def _capture(returns: pd.Series, bench: pd.Series, upside: bool) -> float:
+    """Up/down capture ratio vs a benchmark return series (in %)."""
+    df = pd.concat([_clean(returns).rename("r"), bench.rename("b")], axis=1).dropna()
+    if df.empty:
         return 0.0
-    peak = eq.cummax()
-    return float((eq / peak - 1.0).min())
+    mask = df["b"] > 0 if upside else df["b"] < 0
+    sub = df[mask]
+    if sub.empty or abs(sub["b"].mean()) < 1e-12:
+        return 0.0
+    return float(sub["r"].mean() / sub["b"].mean() * 100)
+
+
+def upside_capture(returns: pd.Series, bench: pd.Series) -> float:
+    return _capture(returns, bench, upside=True)
+
+
+def downside_capture(returns: pd.Series, bench: pd.Series) -> float:
+    return _capture(returns, bench, upside=False)
 
 
 def calmar(returns: pd.Series, periods: int = TRADING_DAYS) -> float:
