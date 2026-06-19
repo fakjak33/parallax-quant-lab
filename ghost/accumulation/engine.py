@@ -26,7 +26,13 @@ class AccumConfig:
     initial_cash: float = 10_000.0
     contribution: float = 1_000.0
     cadence: str = "Weekly"            # Daily | Weekly | Monthly
-    deploy_fraction: float = 1.0       # fraction of cash deployed per buy signal
+    # deploy_mode: how much cash to spend each time the buy rule fires
+    #   "pct_cash"      -> deploy_fraction of available cash
+    #   "fixed_dollar"  -> deploy_dollar (capped at available cash)
+    deploy_mode: str = "pct_cash"
+    deploy_fraction: float = 1.0       # used when deploy_mode == "pct_cash"
+    deploy_dollar: float = 5_000.0     # used when deploy_mode == "fixed_dollar"
+    min_signal_gap: int = 0            # min bars between buys (0 = no limit)
     sell_fraction: float = 0.25        # fraction of shares sold per sell signal
     cash_yield_annual: float = 0.0     # optional yield on idle cash
 
@@ -66,6 +72,7 @@ def run_accumulation(close: pd.Series, buy_rule, sell_rule, cfg: AccumConfig,
     cash = cfg.initial_cash
     shares = 0.0
     invested = cfg.initial_cash
+    last_buy = -10**9
     eq, csh, shs, inv = [], [], [], []
 
     for i in range(len(idx)):
@@ -74,15 +81,20 @@ def run_accumulation(close: pd.Series, buy_rule, sell_rule, cfg: AccumConfig,
         if contrib_mask[i] and i > 0:
             cash += cfg.contribution
             invested += cfg.contribution
-        # sell first (free up nothing needed, but realize before buy)
+        # sell first (realize before buy)
         if sell_sig[i] and shares > 0:
             sell_sh = shares * cfg.sell_fraction
             cash += sell_sh * px[i]
             shares -= sell_sh
-        if buy_sig[i] and cash > 0:
-            spend = cash * cfg.deploy_fraction * float(buy_w[i])
-            shares += spend / px[i]
-            cash -= spend
+        if buy_sig[i] and cash > 0 and (i - last_buy) >= cfg.min_signal_gap:
+            if cfg.deploy_mode == "fixed_dollar":
+                spend = min(cash, cfg.deploy_dollar * float(buy_w[i]))
+            else:  # pct_cash
+                spend = cash * cfg.deploy_fraction * float(buy_w[i])
+            if spend > 0:
+                shares += spend / px[i]
+                cash -= spend
+                last_buy = i
         eq.append(shares * px[i] + cash)
         csh.append(cash); shs.append(shares); inv.append(invested)
 

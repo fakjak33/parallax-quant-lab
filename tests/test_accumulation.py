@@ -64,6 +64,43 @@ def test_leverage_filter():
     assert "TQQQ" not in nonlev and "SOXL" not in nonlev
 
 
+def _wavy(n=400, start="2018-01-01"):
+    # oscillating price so drawdown-from-high fires repeatedly
+    idx = pd.bdate_range(start, periods=n)
+    t = np.arange(n)
+    return pd.Series(120 + 20 * np.sin(t / 15.0) + 0.02 * t, index=idx)
+
+
+def test_fixed_dollar_deploy_holds_more_cash_than_all_in():
+    close = _wavy()
+    base = dict(initial_cash=10_000_000, contribution=0, cadence="Weekly")
+    allin = AccumConfig(deploy_mode="pct_cash", deploy_fraction=1.0, **base)
+    fixed = AccumConfig(deploy_mode="fixed_dollar", deploy_dollar=1000, **base)
+    r_allin = run_accumulation(close, BUY_RULES["drawdown"](threshold_pct=3), None, allin, {})
+    r_fixed = run_accumulation(close, BUY_RULES["drawdown"](threshold_pct=3), None, fixed, {})
+    # fixed-$ keeps far more dry powder than going all-in on the first dip
+    assert r_fixed.cash.iloc[-1] > r_allin.cash.iloc[-1]
+
+
+def test_deploy_modes_differ():
+    close = _wavy()
+    base = dict(initial_cash=50000, contribution=0)
+    pct = AccumConfig(deploy_mode="pct_cash", deploy_fraction=1.0, **base)
+    fix = AccumConfig(deploy_mode="fixed_dollar", deploy_dollar=1000, **base)
+    r1 = run_accumulation(close, BUY_RULES["drawdown"](threshold_pct=3), None, pct, {})
+    r2 = run_accumulation(close, BUY_RULES["drawdown"](threshold_pct=3), None, fix, {})
+    assert abs(r1.equity.iloc[-1] - r2.equity.iloc[-1]) > 1.0
+
+
+def test_panel_indicators_present():
+    close = _ramp()
+    for key in ["drawdown", "rsi", "ma_slope"]:
+        panel = BUY_RULES[key]().panel_indicator(close, {})
+        assert panel is not None
+        ser, label, levels = panel
+        assert len(ser) == len(close) and isinstance(label, str)
+
+
 def test_stock_universe_size():
     assert len(STOCKS_500) >= 400  # curated large/mid-cap set
     assert len(STOCKS_500) == len(set(STOCKS_500))  # de-duped

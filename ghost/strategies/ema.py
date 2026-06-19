@@ -21,6 +21,7 @@ class EMACrossover(Strategy):
     params = {
         "fast": (16, 2, 1000, 1),
         "slow": (64, 4, 2000, 1),
+        "smooth": (1, 1, 50, 1),
     }
     spectrum_param = "fast"
 
@@ -31,7 +32,9 @@ class EMACrossover(Strategy):
         ewmac = close.ewm(span=fast).mean() - close.ewm(span=slow).mean()
         # normalize by price * daily vol => unit-free trend strength
         vol = ew_vol(close, annualize=False) * close
-        return normalize_by_vol(ewmac, vol)
+        fc = normalize_by_vol(ewmac, vol)
+        sm = int(self.values.get("smooth", 1))
+        return fc.rolling(sm).mean().fillna(fc) if sm > 1 else fc
 
     def indicator_lines(self, ohlcv):
         close = ohlcv["close"]

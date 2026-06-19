@@ -80,10 +80,17 @@ div[data-baseweb="select"] {{
     border-radius: 0 !important; border-width: 1px !important;
 }}
 
-/* consistent "?" help emblems — muted, no box, uniform */
-[data-testid="stTooltipIcon"], [data-testid="stTooltipIcon"] svg {{
-    border: none !important; background: transparent !important;
+/* consistent "?" help emblems — muted, no box, uniform (cover all variants) */
+[data-testid="stTooltipIcon"], [data-testid="stTooltipIcon"] svg,
+[data-testid="stTooltipHoverTarget"], [data-testid="stTooltipHoverTarget"] svg,
+[data-testid="stWidgetLabel"] svg, label svg, [aria-label="Help"], .stTooltipIcon {{
+    border: none !important; background: transparent !important; box-shadow: none !important;
+    outline: none !important; border-radius: 0 !important;
     color: {THEME.muted} !important; fill: {THEME.muted} !important;
+}}
+/* some help icons sit inside a span that picks up the input border — strip it */
+[data-testid="stTooltipHoverTarget"] > div, [data-testid="stTooltipIcon"] > div {{
+    border: none !important; background: transparent !important;
 }}
 
 /* sidebar */
@@ -240,7 +247,7 @@ def style_fig(fig: go.Figure, height: int = 440, transparent: bool = True,
         paper_bgcolor=bg,
         plot_bgcolor=bg,
         font=dict(family="Space Mono, monospace", color=THEME.text, size=12),
-        title_font=dict(family="VT323, Space Mono, monospace", size=22, color="#ffffff"),
+        title_font=dict(family="Space Mono, monospace", size=17, color="#ffffff"),
         colorway=list(THEME.series),
         margin=dict(l=55, r=24, t=48, b=44),
         legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor=THEME.grid, borderwidth=1),

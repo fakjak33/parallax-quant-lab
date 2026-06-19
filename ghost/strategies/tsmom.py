@@ -21,6 +21,7 @@ class TimeSeriesMomentum(Strategy):
     label = "Time-Series Momentum"
     params = {
         "lookback": (90, 10, 2000, 5),
+        "smooth": (1, 1, 50, 1),
     }
     spectrum_param = "lookback"
 
@@ -31,4 +32,6 @@ class TimeSeriesMomentum(Strategy):
         # scale by annualized vol so the signal is risk-adjusted
         vol_annual = ew_vol(close, annualize=True)
         sharpe_like = past_ret / (vol_annual * np.sqrt(lb / TRADING_DAYS))
-        return sharpe_like.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        fc = sharpe_like.replace([np.inf, -np.inf], np.nan).fillna(0.0)
+        sm = int(self.values.get("smooth", 1))
+        return fc.rolling(sm).mean().fillna(fc) if sm > 1 else fc
