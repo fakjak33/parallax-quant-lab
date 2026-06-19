@@ -46,6 +46,14 @@ class Rule:
     def weight(self, close: pd.Series, ctx: dict) -> pd.Series:
         return pd.Series(1.0, index=close.index)
 
+    def panel_indicator(self, close: pd.Series, ctx: dict):
+        """Return (series, label, ref_levels) for a sub-panel plot, or None.
+
+        ref_levels is a list of (value, label) horizontal threshold lines.
+        Price-space rules (MA, regression) return None — they overlay on price.
+        """
+        return None
+
 
 # ----------------------------- BUY RULES -----------------------------------
 @_reg(BUY_RULES)
@@ -61,33 +69,59 @@ class FixedDCA(Rule):
 @_reg(BUY_RULES)
 class DrawdownBuy(Rule):
     key, label = "drawdown", "Buy on drawdown from high"
-    desc = "Deploy when price is X% below its running peak; deeper dips deploy more."
-    params = {"threshold_pct": (10.0, 1.0, 80.0, 1.0), "scale_by_depth": (1, 0, 1, 1)}
+    desc = "Deploy when price is X% below its peak; deeper dips deploy more."
+    # peak_lookback: 0 = all-time high; else rolling window in bars
+    params = {"threshold_pct": (10.0, 1.0, 80.0, 1.0), "scale_by_depth": (1, 0, 1, 1),
+              "peak_lookback": (0, 0, 2000, 10)}
+
+    def _dd(self, close):
+        lb = int(self.values["peak_lookback"]) or None
+        return sig.drawdown_from_high(close, rolling=lb) * -100.0
 
     def signal(self, close, ctx):
-        dd = sig.drawdown_from_high(close) * -100.0
-        return dd >= float(self.values["threshold_pct"])
+        return self._dd(close) >= float(self.values["threshold_pct"])
 
     def weight(self, close, ctx):
         if not int(self.values["scale_by_depth"]):
             return pd.Series(1.0, index=close.index)
-        dd = (sig.drawdown_from_high(close) * -100.0)
         thr = float(self.values["threshold_pct"])
-        return (dd / (thr * 2)).clip(0.25, 1.0)
+        return (self._dd(close) / (thr * 2)).clip(0.25, 1.0)
+
+    def panel_indicator(self, close, ctx):
+        return (self._dd(close), "Drawdown from high (%)",
+                [(float(self.values["threshold_pct"]), "buy threshold")])
 
 
 @_reg(BUY_RULES)
 class VIXBuy(Rule):
     key, label = "vix", "Buy when VIX elevated"
     desc = "Deploy when VIX ≥ level (fear). Needs the VIX series (auto-fetched)."
-    params = {"level": (25.0, 10.0, 80.0, 1.0)}
+    params = {"level": (25.0, 10.0, 80.0, 1.0), "scale_by_level": (1, 0, 1, 1)}
 
-    def signal(self, close, ctx):
+    def _vix(self, close, ctx):
         vix = ctx.get("vix")
         if vix is None:
+            return None
+        return vix.reindex(close.index).ffill().bfill()
+
+    def signal(self, close, ctx):
+        v = self._vix(close, ctx)
+        if v is None:
             return pd.Series(False, index=close.index)
-        v = vix.reindex(close.index).ffill()
         return v >= float(self.values["level"])
+
+    def weight(self, close, ctx):
+        v = self._vix(close, ctx)
+        if v is None or not int(self.values["scale_by_level"]):
+            return pd.Series(1.0, index=close.index)
+        lvl = float(self.values["level"])
+        return (v / (lvl * 2)).clip(0.25, 1.0)
+
+    def panel_indicator(self, close, ctx):
+        v = self._vix(close, ctx)
+        if v is None:
+            return None
+        return (v, "VIX", [(float(self.values["level"]), "buy level")])
 
 
 @_reg(BUY_RULES)
@@ -113,6 +147,10 @@ class RSIBuy(Rule):
     def signal(self, close, ctx):
         return sig.rsi(close, int(self.values["period"])) <= float(self.values["level"])
 
+    def panel_indicator(self, close, ctx):
+        return (sig.rsi(close, int(self.values["period"])), "RSI",
+                [(float(self.values["level"]), "buy level"), (50.0, "")])
+
 
 @_reg(BUY_RULES)
 class SlopeBuy(Rule):
@@ -123,6 +161,11 @@ class SlopeBuy(Rule):
     def signal(self, close, ctx):
         slope = sig.ma_slope(close, int(self.values["n"])) * 10000  # bps/bar
         return slope <= float(self.values["level_bps"])
+
+    def panel_indicator(self, close, ctx):
+        slope = sig.ma_slope(close, int(self.values["n"])) * 10000
+        return (slope, f"MA({int(self.values['n'])}) slope (bps/bar)",
+                [(float(self.values["level_bps"]), "buy level")])
 
 
 @_reg(BUY_RULES)
@@ -152,6 +195,11 @@ class MayerSell(Rule):
     def signal(self, close, ctx):
         return sig.pct_from_ma(close, int(self.values["n"])) * 100 >= float(self.values["pct"])
 
+    def panel_indicator(self, close, ctx):
+        return (sig.pct_from_ma(close, int(self.values["n"])) * 100,
+                f"% above MA({int(self.values['n'])})",
+                [(float(self.values["pct"]), "sell level")])
+
 
 @_reg(SELL_RULES)
 class RSISell(Rule):
@@ -161,6 +209,10 @@ class RSISell(Rule):
 
     def signal(self, close, ctx):
         return sig.rsi(close, int(self.values["period"])) >= float(self.values["level"])
+
+    def panel_indicator(self, close, ctx):
+        return (sig.rsi(close, int(self.values["period"])), "RSI",
+                [(float(self.values["level"]), "sell level"), (50.0, "")])
 
 
 @_reg(SELL_RULES)

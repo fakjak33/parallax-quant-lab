@@ -288,19 +288,24 @@ def add_trade_markers(fig, price, ledger):
 
     longs = ledger[ledger["side"] == "LONG"]
     shorts = ledger[ledger["side"] == "SHORT"]
+    # vertical offset so entry/exit markers at the same price don't overlap
+    span = float(price.max() - price.min()) or 1.0
+    off = span * 0.02
     specs = [
-        (longs["entry_date"], "triangle-up", THEME.long_color, "Long entry"),
-        (longs["exit_date"], "x", THEME.long_color, "Long exit"),
-        (shorts["entry_date"], "triangle-down", THEME.short_color, "Short entry"),
-        (shorts["exit_date"], "x", THEME.short_color, "Short exit"),
+        # (dates, symbol, color, name, y-offset direction)
+        (longs["entry_date"], "triangle-up", THEME.long_color, "Long entry", -off),
+        (longs["exit_date"], "x-thin", THEME.long_color, "Long exit", +off),
+        (shorts["entry_date"], "triangle-down", THEME.short_color, "Short entry", +off),
+        (shorts["exit_date"], "x-thin", THEME.short_color, "Short exit", -off),
     ]
-    for dates, sym, color, name in specs:
+    for dates, sym, color, name, dy in specs:
         if len(dates) == 0:
             continue
         xs = pd.to_datetime(list(dates))
-        ys = _price_at(dates)
+        ys = [y + dy for y in _price_at(dates)]
         fig.add_trace(go.Scatter(x=xs, y=ys, mode="markers", name=name,
-            marker=dict(symbol=sym, size=11, color=color, line=dict(width=1, color="#fff"))))
+            marker=dict(symbol=sym, size=11, color=color,
+                        line=dict(width=1.5, color="#fff"))))
 
 
 # ----------------------------------------------------------------------------
@@ -692,10 +697,23 @@ def run_accum_lab():
                                                 100.0, help=ACCUM_HELP["contribution"])
     acfg.cadence = st.sidebar.selectbox("Cadence", ["Daily", "Weekly", "Monthly"], index=1,
                                         help=ACCUM_HELP["cadence"])
-    acfg.deploy_fraction = st.sidebar.slider("Deploy fraction per signal", 0.05, 1.0, 1.0, 0.05,
-                                             help=ACCUM_HELP["deploy"])
+    dmode = st.sidebar.radio("Deploy per signal", ["% of cash", "Fixed $"],
+                             help=ACCUM_HELP["deploy"])
+    if dmode == "% of cash":
+        acfg.deploy_mode = "pct_cash"
+        acfg.deploy_fraction = st.sidebar.slider("% of available cash", 0.05, 1.0, 0.5, 0.05,
+                                                 help="Hold the rest as dry powder for future signals.")
+    else:
+        acfg.deploy_mode = "fixed_dollar"
+        acfg.deploy_dollar = st.sidebar.number_input("$ deployed per signal", 100.0, 1e8,
+                                                     5_000.0, 500.0,
+                                                     help="Spend a fixed dollar amount each signal; "
+                                                          "the rest stays in cash.")
+    acfg.min_signal_gap = int(st.sidebar.number_input("Min bars between buys", 0, 250, 0, 1,
+                              help="Avoid buying on consecutive bars; 0 = no limit."))
     acfg.cash_yield_annual = st.sidebar.number_input("Idle cash yield (annual)", 0.0, 0.10,
-                                                     0.0, 0.005)
+                                                     0.0, 0.005,
+                                                     help="Interest earned on un-deployed cash.")
 
     st.sidebar.markdown(section("Buy rule", 3), unsafe_allow_html=True)
     buy_label = st.sidebar.selectbox("Accumulation trigger",
@@ -744,7 +762,8 @@ def run_accum_lab():
     st.markdown(section(f"Accumulation — {ticker}", 0), unsafe_allow_html=True)
     st.caption(ACCUM_HELP["lab"])
 
-    t_eq, t_dd, t_stats, t_reg = st.tabs(["EQUITY", "DRAWDOWN", "STATS", "REGRESSION"])
+    t_eq, t_sig, t_dd, t_stats, t_reg = st.tabs(
+        ["EQUITY", "SIGNALS", "DRAWDOWN", "STATS", "REGRESSION"])
 
     with t_eq:
         log_y = st.checkbox("Log scale", True, key="acc_log", help=HELP["logscale"])
@@ -763,6 +782,42 @@ def run_accum_lab():
         c[1].metric("Invested", f"${res.stats['Invested']:,.0f}")
         c[2].metric("Profit", f"${res.stats['Profit']:,.0f}")
         c[3].metric("Return on invested", f"{res.stats['ReturnOnInvested%']:.1f}%")
+
+    with t_sig:
+        st.caption("Price with buy/sell signals, plus the indicator driving the "
+                   "selected rule (e.g. RSI, VIX, drawdown) and its threshold.")
+        log_s = st.checkbox("Log scale", True, key="acc_sig_log", help=HELP["logscale"])
+        buy_sig = buy_rule.signal(close, ctx).reindex(close.index).fillna(False)
+        sell_sig = (sell_rule.signal(close, ctx).reindex(close.index).fillna(False)
+                    if sell_rule is not None else pd.Series(False, index=close.index))
+        # price + buy/sell markers
+        sp = float(close.max() - close.min()) or 1.0
+        pricefig = go.Figure()
+        pricefig.add_trace(go.Scatter(x=close.index, y=close, name=ticker,
+                                      line=dict(color="#fff", width=1.4)))
+        pricefig.add_trace(go.Scatter(x=close.index[buy_sig], y=close[buy_sig] - sp * 0.02,
+            mode="markers", name="Buy", marker=dict(symbol="triangle-up", size=9,
+            color=THEME.teal, line=dict(width=1, color="#fff"))))
+        if sell_sig.any():
+            pricefig.add_trace(go.Scatter(x=close.index[sell_sig], y=close[sell_sig] + sp * 0.02,
+                mode="markers", name="Sell", marker=dict(symbol="triangle-down", size=9,
+                color=THEME.coral, line=dict(width=1, color="#fff"))))
+        pricefig.update_layout(title=f"{ticker} — buy/sell signals")
+        st.plotly_chart(style_fig(pricefig, height=380, log_y=log_s), use_container_width=True)
+        # indicator sub-panel (RSI/VIX/drawdown/slope/...) for the active buy rule
+        panel = buy_rule.panel_indicator(close, ctx)
+        if panel is not None:
+            ser, ilabel, levels = panel
+            ifig = go.Figure()
+            ifig.add_trace(go.Scatter(x=ser.index, y=ser, name=ilabel, line=dict(color=THEME.mustard)))
+            for val, lab in levels:
+                ifig.add_hline(y=val, line=dict(color=THEME.coral, dash="dot"),
+                               annotation_text=lab, annotation_position="right")
+            ifig.update_layout(title=f"Indicator — {ilabel}")
+            st.plotly_chart(style_fig(ifig, height=260), use_container_width=True)
+        else:
+            st.info("This buy rule is price-based (e.g. MA touch / regression) — see "
+                    "the price chart above and the REGRESSION tab.")
 
     with t_dd:
         from ghost.backtest import metrics as M
