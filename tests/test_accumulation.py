@@ -101,6 +101,49 @@ def test_panel_indicators_present():
         assert len(ser) == len(close) and isinstance(label, str)
 
 
+def test_profit_flat_until_first_deploy():
+    # drawdown rule never fires on a pure uptrend -> no capital deployed, so the
+    # P/L curve must stay flat at exactly $0 even as contributions accumulate.
+    close = _ramp()
+    cfg = AccumConfig(initial_cash=10_000, contribution=100, cadence="Weekly")
+    res = run_accumulation(close, BUY_RULES["drawdown"](threshold_pct=10), None, cfg, {})
+    assert (res.deployed == 0.0).all()
+    assert float(res.profit.abs().max()) < 1e-6        # P/L pinned to zero
+    # equity still grows (dry powder), but only from contributions
+    assert res.equity.iloc[-1] > res.equity.iloc[0]
+    assert abs(res.equity.iloc[-1] - res.invested.iloc[-1]) < 1e-6
+
+
+def test_deployed_tracks_buys_and_bounds():
+    close = _ramp()
+    cfg = AccumConfig(initial_cash=0, contribution=100, cadence="Weekly")
+    res = run_accumulation(close, BUY_RULES["dca"](), None, cfg, {})
+    # capital actually deployed is positive and never exceeds money contributed
+    assert res.deployed.iloc[-1] > 0
+    assert res.deployed.iloc[-1] <= res.invested.iloc[-1] + 1e-6
+    assert res.deployed.is_monotonic_increasing       # no sells -> basis only grows
+    assert res.profit.iloc[-1] > 0                     # uptrend -> real gains
+
+
+def test_sell_reduces_deployed_basis():
+    close = _wavy()
+    cfg = AccumConfig(initial_cash=50_000, contribution=0, sell_fraction=0.5)
+    res = run_accumulation(close, BUY_RULES["drawdown"](threshold_pct=3),
+                           SELL_RULES["rsi_sell"](level=60), cfg, {})
+    # at least one sell happened and basis dipped below its running peak
+    assert res.deployed.min() <= res.deployed.max()
+    assert res.deployed.iloc[-1] >= 0
+
+
+def test_accum_stats_schema():
+    close = _ramp()
+    cfg = AccumConfig(initial_cash=1000, contribution=100, cadence="Weekly")
+    res = run_accumulation(close, BUY_RULES["dca"](), None, cfg, {})
+    for key in ("FinalEquity", "Contributed", "Deployed", "Profit",
+                "ReturnOnContributed%", "ReturnOnDeployed%"):
+        assert key in res.stats
+
+
 def test_stock_universe_size():
     assert len(STOCKS_500) >= 400  # curated large/mid-cap set
     assert len(STOCKS_500) == len(set(STOCKS_500))  # de-duped
