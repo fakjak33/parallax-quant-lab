@@ -361,6 +361,36 @@ def run_rnd():
         fig.update_layout(title=f"EQUITY CURVE — {instrument}")
         st.plotly_chart(style_fig(fig, log_y=log_eq), use_container_width=True)
 
+        # --- Return summary (ROI / total profit / final equity) -------------
+        st.markdown(section("Return summary", 4), unsafe_allow_html=True)
+        bh_final = float(bench_eq.iloc[-1])
+        summ_rows = []
+        for label, (res, _) in results.items():
+            fe = float(res.equity.iloc[-1])
+            summ_rows.append({
+                "Strategy": label,
+                "Final equity": fe,
+                "Total return %": (fe / bt.capital - 1.0) * 100,
+                "Profit $": fe - bt.capital,
+                "CAGR %": res.stats.get("CAGR", float("nan")) * 100,
+                "Sharpe": res.stats.get("Sharpe", float("nan")),
+                "Max DD %": res.stats.get("MaxDD", float("nan")) * 100,
+                "vs Buy&Hold %": (fe / bh_final - 1.0) * 100 if bh_final else float("nan"),
+            })
+        summ = pd.DataFrame(summ_rows).set_index("Strategy")
+        st.dataframe(summ.style.format({
+            "Final equity": "${:,.0f}", "Total return %": "{:.1f}%", "Profit $": "${:,.0f}",
+            "CAGR %": "{:.1f}%", "Sharpe": "{:.2f}", "Max DD %": "{:.1f}%",
+            "vs Buy&Hold %": "{:+.1f}%"}), use_container_width=True)
+        # Headline cards for the best strategy by final equity
+        best_lbl = summ["Final equity"].idxmax()
+        best = summ.loc[best_lbl]
+        cc = st.columns(4)
+        cc[0].metric("Final equity (best)", f"${best['Final equity']:,.0f}", best_lbl)
+        cc[1].metric("Total return", f"{best['Total return %']:.1f}%")
+        cc[2].metric("Profit", f"${best['Profit $']:,.0f}")
+        cc[3].metric("vs Buy & Hold", f"{best['vs Buy&Hold %']:+.1f}%")
+
         st.markdown(section("Signals & indicators", 1), unsafe_allow_html=True)
         sig_label = st.selectbox("Strategy to inspect", list(results))
         sig_res, sig_strat = results[sig_label]
@@ -596,21 +626,36 @@ def run_rnd():
                                      default=[], help=HELP["corr_under"])
         ck = [label_to_key(l) for l in chosen if not REGISTRY[label_to_key(l)].cross_sectional]
         series = {REGISTRY[k].label: run_one(k)[0].returns for k in ck}
+        # Always include the current instrument as a baseline so a correlation
+        # renders even with a single active strategy (strategy-vs-market is the
+        # most useful comparison anyway).
+        series[f"{instrument} (underlying)"] = bench_ret
         for u in underlyings:
+            if u == instrument:
+                continue
             try:
                 up = providers.get_prices(u, start=cfg["start"] or None, end=cfg["end"] or None)
-                series[u] = up["close"].pct_change()
+                # resample to the SELECTED timeframe so the series aligns with the
+                # strategy/instrument returns (else weekly/monthly vs daily mismatch)
+                up = resample_ohlcv(up, TIMEFRAMES[tf])
+                if cfg["start"]:
+                    up = up[up.index >= pd.Timestamp(cfg["start"])]
+                if cfg["end"]:
+                    up = up[up.index <= pd.Timestamp(cfg["end"])]
+                series[u] = up["close"].pct_change().reindex(bench_ret.index)
             except Exception as e:
                 st.warning(f"{u}: {e}")
-        if len(series) >= 2:
-            corr = pd.DataFrame(series).dropna(how="all").corr()
-            hm = go.Figure(go.Heatmap(z=corr.values, x=corr.columns, y=corr.index,
+        corr = pd.DataFrame(series).dropna(how="all").corr()
+        if corr.shape[0] >= 2 and not corr.isna().all().all():
+            labels = [str(c) for c in corr.columns]
+            hm = go.Figure(go.Heatmap(z=corr.values, x=labels, y=labels,
                 colorscale="RdBu", zmid=0, zmin=-1, zmax=1,
-                text=np.round(corr.values, 2), texttemplate="%{text}"))
+                text=np.round(corr.values, 2), texttemplate="%{text}",
+                colorbar=dict(title="r")))
             hm.update_layout(title="RETURN CORRELATION")
             st.plotly_chart(style_fig(hm), use_container_width=True)
         else:
-            st.info("Select 2+ series (strategies and/or underlyings) to see correlations.")
+            st.info("Activate at least one strategy to see its correlation to the underlying.")
 
         st.markdown(section("Walk-forward (IS vs OOS)", 1), unsafe_allow_html=True)
         st.caption(HELP["walkforward"])
@@ -774,38 +819,86 @@ def run_accum_lab():
             fig.add_trace(go.Scatter(x=eq.index, y=eq, mode="lines", name=name,
                                      line=dict(dash="dot")))
         fig.add_trace(go.Scatter(x=res.invested.index, y=res.invested, mode="lines",
-                                 name="Invested", line=dict(color=THEME.muted, dash="dash")))
-        fig.update_layout(title=f"{ticker} — strategy vs DCA vs buy&hold")
+                                 name="Contributed", line=dict(color=THEME.muted, dash="dash")))
+        fig.add_trace(go.Scatter(x=res.deployed.index, y=res.deployed, mode="lines",
+                                 name="Deployed (cost basis)", line=dict(color=THEME.mauve, dash="dot")))
+        # the underlying asset's own price, on a secondary axis (right) so you can
+        # see where the strategy bought relative to price moves
+        fig.add_trace(go.Scatter(x=close.index, y=close, mode="lines",
+                                 name=f"{ticker} price (RHS)", yaxis="y2",
+                                 line=dict(color=THEME.orange, width=1.2, dash="dot")))
+        fig.update_layout(
+            title=f"{ticker} — strategy vs DCA vs buy&hold",
+            yaxis2=dict(overlaying="y", side="right", showgrid=False,
+                        title=f"{ticker} price ($)",
+                        type="log" if log_y else "linear"))
         st.plotly_chart(style_fig(fig, log_y=log_y), use_container_width=True)
-        c = st.columns(4)
+
+        # Dedicated P/L curve: profit = equity − money contributed. Flat at $0
+        # until the first buy deploys capital, so the dry-powder phase is obvious.
+        st.markdown(section("Profit / loss (vs money contributed)", 1), unsafe_allow_html=True)
+        st.caption("P/L = equity − cash contributed. Stays flat at $0 until the buy "
+                   "rule first deploys capital — then it reflects only real gains/losses.")
+        plfig = go.Figure()
+        plfig.add_trace(go.Scatter(x=res.profit.index, y=res.profit, mode="lines",
+                                   name=f"{buy_label} P/L", line=dict(color=THEME.teal, width=2)))
+        for name, eq in bench.items():
+            plfig.add_trace(go.Scatter(x=eq.index, y=eq - res.invested.reindex(eq.index),
+                                       mode="lines", name=f"{name} P/L", line=dict(dash="dot")))
+        plfig.add_hline(y=0, line=dict(color=THEME.muted, width=1))
+        plfig.update_layout(title=f"{ticker} — profit / loss ($)", yaxis_title="P/L $")
+        st.plotly_chart(style_fig(plfig, height=320), use_container_width=True)
+
+        c = st.columns(3)
         c[0].metric("Final equity", f"${res.stats['FinalEquity']:,.0f}")
-        c[1].metric("Invested", f"${res.stats['Invested']:,.0f}")
-        c[2].metric("Profit", f"${res.stats['Profit']:,.0f}")
-        c[3].metric("Return on invested", f"{res.stats['ReturnOnInvested%']:.1f}%")
+        c[1].metric("Contributed", f"${res.stats['Contributed']:,.0f}")
+        c[2].metric("Deployed (cost basis)", f"${res.stats['Deployed']:,.0f}")
+        c2 = st.columns(3)
+        c2[0].metric("Profit (P/L)", f"${res.stats['Profit']:,.0f}")
+        c2[1].metric("Return on contributed", f"{res.stats['ReturnOnContributed%']:.1f}%",
+                     help="Profit ÷ every dollar you saved (includes dry-powder drag).")
+        c2[2].metric("Return on deployed", f"{res.stats['ReturnOnDeployed%']:.1f}%",
+                     help="Return on capital actually put to work (excludes idle cash).")
 
     with t_sig:
         st.caption("Price with buy/sell signals, plus the indicator driving the "
                    "selected rule (e.g. RSI, VIX, drawdown) and its threshold.")
         log_s = st.checkbox("Log scale", True, key="acc_sig_log", help=HELP["logscale"])
-        buy_sig = buy_rule.signal(close, ctx).reindex(close.index).fillna(False)
-        sell_sig = (sell_rule.signal(close, ctx).reindex(close.index).fillna(False)
-                    if sell_rule is not None else pd.Series(False, index=close.index))
-        # price + buy/sell markers
+        # Boolean masks aligned to the price index (numpy for safe positional use).
+        buy_sig = (buy_rule.signal(close, ctx).reindex(close.index)
+                   .fillna(False).astype(bool).to_numpy())
+        sell_sig = (sell_rule.signal(close, ctx).reindex(close.index)
+                    .fillna(False).astype(bool).to_numpy()
+                    if sell_rule is not None else np.zeros(len(close), dtype=bool))
+        n_buy, n_sell = int(buy_sig.sum()), int(sell_sig.sum())
+        # Make "why are there no markers" obvious instead of silently blank.
+        if buy_cls.key == "vix" and "vix" not in ctx:
+            st.warning("VIX series unavailable (couldn't fetch ^VIX), so the VIX buy "
+                       "rule can't fire. Try again or pick another rule.")
+        st.caption(f"**{n_buy}** buy signal(s)"
+                   + (f" · **{n_sell}** sell signal(s)" if sell_rule is not None else "")
+                   + " over the selected window.")
         sp = float(close.max() - close.min()) or 1.0
         pricefig = go.Figure()
         pricefig.add_trace(go.Scatter(x=close.index, y=close, name=ticker,
                                       line=dict(color="#fff", width=1.4)))
-        pricefig.add_trace(go.Scatter(x=close.index[buy_sig], y=close[buy_sig] - sp * 0.02,
-            mode="markers", name="Buy", marker=dict(symbol="triangle-up", size=9,
-            color=THEME.teal, line=dict(width=1, color="#fff"))))
-        if sell_sig.any():
-            pricefig.add_trace(go.Scatter(x=close.index[sell_sig], y=close[sell_sig] + sp * 0.02,
-                mode="markers", name="Sell", marker=dict(symbol="triangle-down", size=9,
+        if n_buy:
+            pricefig.add_trace(go.Scatter(x=close.index[buy_sig], y=close.to_numpy()[buy_sig] - sp * 0.02,
+                mode="markers", name=f"Buy ({n_buy})", marker=dict(symbol="triangle-up", size=9,
+                color=THEME.teal, line=dict(width=1, color="#fff"))))
+        if n_sell:
+            pricefig.add_trace(go.Scatter(x=close.index[sell_sig], y=close.to_numpy()[sell_sig] + sp * 0.02,
+                mode="markers", name=f"Sell ({n_sell})", marker=dict(symbol="triangle-down", size=9,
                 color=THEME.coral, line=dict(width=1, color="#fff"))))
         pricefig.update_layout(title=f"{ticker} — buy/sell signals")
         st.plotly_chart(style_fig(pricefig, height=380, log_y=log_s), use_container_width=True)
-        # indicator sub-panel (RSI/VIX/drawdown/slope/...) for the active buy rule
-        panel = buy_rule.panel_indicator(close, ctx)
+        # indicator sub-panel (RSI/VIX/drawdown/slope/...) for the active buy rule.
+        # Guarded: a single misbehaving rule must never blank the whole tab.
+        try:
+            panel = buy_rule.panel_indicator(close, ctx)
+        except Exception as e:  # noqa: BLE001
+            panel = None
+            st.warning(f"Indicator panel unavailable for this rule: {e}")
         if panel is not None:
             ser, ilabel, levels = panel
             ifig = go.Figure()
@@ -838,8 +931,9 @@ def run_accum_lab():
         from ghost.accumulation.engine import _accum_stats
         for name, eq in bench.items():
             inv = res.invested  # same contribution schedule
-            rows[name] = _accum_stats(eq, inv, close)
-        tbl = pd.DataFrame(rows).T[["FinalEquity", "Profit", "ReturnOnInvested%",
+            rows[name] = _accum_stats(eq, inv, close)  # benchmarks deploy everything
+        tbl = pd.DataFrame(rows).T[["FinalEquity", "Contributed", "Deployed", "Profit",
+                                    "ReturnOnContributed%", "ReturnOnDeployed%",
                                     "AnnVol%", "MaxDD%", "Beta", "Alpha(ann)%", "Corr"]]
         st.dataframe(tbl.style.format("{:.2f}"), use_container_width=True)
 

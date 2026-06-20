@@ -71,7 +71,12 @@ div[data-baseweb="select"] {{
     color: #ffffff !important;
     font-weight: 600;
 }}
-.stNumberInput button {{ border-radius: 0 !important; border: 1px solid {THEME.border} !important; }}
+/* ONLY the +/- steppers get the hard border — NOT the help "?" button that
+   Streamlit also nests inside the number-input widget (that caused white boxes
+   around the ? icons next to number inputs). */
+[data-testid="stNumberInputStepUp"], [data-testid="stNumberInputStepDown"] {{
+    border-radius: 0 !important; border: 1px solid {THEME.border} !important;
+}}
 
 /* sub-section inputs (number/date/text) square + thinner 1px border */
 .stNumberInput div[data-baseweb="input"], .stDateInput div[data-baseweb="input"],
@@ -91,6 +96,13 @@ div[data-baseweb="select"] {{
 /* some help icons sit inside a span that picks up the input border — strip it */
 [data-testid="stTooltipHoverTarget"] > div, [data-testid="stTooltipIcon"] > div {{
     border: none !important; background: transparent !important;
+}}
+/* the help "?" itself is a <button> (aria-label "Help for …"); never box it,
+   even when nested inside a number-input/selectbox widget */
+button[aria-label^="Help"], [data-testid="stTooltipHoverTarget"] button,
+[data-testid="stTooltipHoverTarget"] {{
+    border: none !important; background: transparent !important;
+    box-shadow: none !important; padding: 0 !important;
 }}
 
 /* sidebar */
@@ -241,13 +253,15 @@ def style_fig(fig: go.Figure, height: int = 440, transparent: bool = True,
     ``log_y`` switches the y-axis to a logarithmic scale.
     """
     bg = "rgba(0,0,0,0)" if transparent else THEME.bg
+    # Use the app's own theme fonts so chart text matches the rest of the UI
+    # (titles share the display font with section headers/tabs/banner).
     fig.update_layout(
         template="plotly_dark",
         height=height,
         paper_bgcolor=bg,
         plot_bgcolor=bg,
-        font=dict(family="Space Mono, monospace", color=THEME.text, size=12),
-        title_font=dict(family="Space Mono, monospace", size=17, color="#ffffff"),
+        font=dict(family=THEME.font_body, color=THEME.text, size=12),
+        title_font=dict(family=THEME.font_body, size=18, color="#ffffff"),
         colorway=list(THEME.series),
         margin=dict(l=55, r=24, t=48, b=44),
         legend=dict(bgcolor="rgba(0,0,0,0)", bordercolor=THEME.grid, borderwidth=1),
