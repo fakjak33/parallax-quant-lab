@@ -635,7 +635,14 @@ def run_rnd():
                 continue
             try:
                 up = providers.get_prices(u, start=cfg["start"] or None, end=cfg["end"] or None)
-                series[u] = up["close"].pct_change()
+                # resample to the SELECTED timeframe so the series aligns with the
+                # strategy/instrument returns (else weekly/monthly vs daily mismatch)
+                up = resample_ohlcv(up, TIMEFRAMES[tf])
+                if cfg["start"]:
+                    up = up[up.index >= pd.Timestamp(cfg["start"])]
+                if cfg["end"]:
+                    up = up[up.index <= pd.Timestamp(cfg["end"])]
+                series[u] = up["close"].pct_change().reindex(bench_ret.index)
             except Exception as e:
                 st.warning(f"{u}: {e}")
         corr = pd.DataFrame(series).dropna(how="all").corr()
@@ -815,7 +822,16 @@ def run_accum_lab():
                                  name="Contributed", line=dict(color=THEME.muted, dash="dash")))
         fig.add_trace(go.Scatter(x=res.deployed.index, y=res.deployed, mode="lines",
                                  name="Deployed (cost basis)", line=dict(color=THEME.mauve, dash="dot")))
-        fig.update_layout(title=f"{ticker} — strategy vs DCA vs buy&hold")
+        # the underlying asset's own price, on a secondary axis (right) so you can
+        # see where the strategy bought relative to price moves
+        fig.add_trace(go.Scatter(x=close.index, y=close, mode="lines",
+                                 name=f"{ticker} price (RHS)", yaxis="y2",
+                                 line=dict(color=THEME.orange, width=1.2, dash="dot")))
+        fig.update_layout(
+            title=f"{ticker} — strategy vs DCA vs buy&hold",
+            yaxis2=dict(overlaying="y", side="right", showgrid=False,
+                        title=f"{ticker} price ($)",
+                        type="log" if log_y else "linear"))
         st.plotly_chart(style_fig(fig, log_y=log_y), use_container_width=True)
 
         # Dedicated P/L curve: profit = equity − money contributed. Flat at $0
