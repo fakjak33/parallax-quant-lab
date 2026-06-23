@@ -86,6 +86,47 @@ def _download(ticker: str, start: str | None, end: str | None) -> pd.DataFrame:
     return out
 
 
+def prewarm(tickers, force_refresh: bool = False) -> None:
+    """Batch-download any UNCACHED tickers in a single yfinance call and write
+    each to its parquet cache. Big speed-up vs the per-ticker path when filling
+    a large universe (e.g. the ETF Lab). Best-effort: failures are ignored so
+    callers fall back to the normal per-ticker fetch.
+    """
+    import yfinance as yf
+
+    want = []
+    for t in tickers:
+        try:
+            ct = clean_ticker(t)
+        except ValueError:
+            continue
+        if force_refresh or not _cache_path(ct).exists():
+            want.append(ct)
+    want = list(dict.fromkeys(want))
+    if len(want) < 2:
+        return
+    try:
+        raw = yf.download(want, period="max", auto_adjust=True, progress=False,
+                          group_by="ticker", threads=True)
+    except Exception:
+        return
+    if raw is None or raw.empty:
+        return
+    for ct in want:
+        try:
+            sub = raw[ct] if isinstance(raw.columns, pd.MultiIndex) else raw
+            sub = sub.rename(columns=str.lower)
+            cols = [c for c in OHLCV if c in sub.columns]
+            out = sub[cols].dropna(how="all")
+            if out.empty:
+                continue
+            out.index = pd.to_datetime(out.index).tz_localize(None)
+            out.index.name = "date"
+            out.to_parquet(_cache_path(ct))
+        except Exception:
+            continue
+
+
 def get_prices(
     ticker: str,
     start: str | None = "2010-01-01",
@@ -125,6 +166,7 @@ def get_panel(
     Columns are tickers; rows are dates aligned on the union of trading days.
     Tickers that fail to download are skipped with a warning column omitted.
     """
+    prewarm(tickers, force_refresh=force_refresh)   # batch-fill the cache first
     series: dict[str, pd.Series] = {}
     errors: dict[str, str] = {}
     for t in tickers:

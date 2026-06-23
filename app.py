@@ -26,6 +26,9 @@ from ghost.backtest.spectrum import run_spectrum, run_spectrum_2d, make_spectrum
 from ghost.backtest.diagnostics import return_correlation, walk_forward, beta_and_correlation
 from ghost.backtest.trades import extract_trades
 from ghost.backtest import montecarlo, metrics, kelly
+from ghost.etf import portfolio as etf_pf, screens as etf_screens, presets as etf_presets
+from ghost.etf import factors as etf_factors, weighting as etf_weighting
+from ghost.etf import economics as etf_econ, overlap as etf_overlap
 from ghost.auth import require_password
 from ghost.ui_theme import CSS, BANNER, section, style_fig
 
@@ -312,12 +315,16 @@ def add_trade_markers(fig, price, ledger):
 # Main
 # ----------------------------------------------------------------------------
 def main():
-    mode = st.sidebar.radio("◆ MODE", ["Strategy R&D", "Accumulation Lab"], index=0,
+    mode = st.sidebar.radio("◆ MODE", ["Strategy R&D", "Accumulation Lab", "ETF Lab"],
+                            index=0,
                             help="Strategy R&D = systematic trading backtester. "
-                                 "Accumulation Lab = long-term DCA / dip-buying strategies.")
+                                 "Accumulation Lab = long-term DCA / dip-buying. "
+                                 "ETF Lab = design & backtest your own fund.")
     st.sidebar.markdown("<hr style='border-color:#2c2c2c'>", unsafe_allow_html=True)
     if mode == "Accumulation Lab":
         run_accum_lab()
+    elif mode == "ETF Lab":
+        run_etf_lab()
     else:
         run_rnd()
 
@@ -953,6 +960,319 @@ def run_accum_lab():
         rfig.add_trace(go.Scatter(x=ch.index, y=ch["lower"], name="−kσ (buy)", line=dict(color=THEME.teal, dash="dot")))
         rfig.update_layout(title=f"{ticker} — {'log' if logfit else 'linear'} regression channel")
         st.plotly_chart(style_fig(rfig, log_y=logfit), use_container_width=True)
+
+
+# ----------------------------------------------------------------------------
+# ETF Lab
+# ----------------------------------------------------------------------------
+ETF_UNIVERSES = ["Sector ETFs", "Broad ETFs", "Industry ETFs", "Futures-like ETFs",
+                 "IWB (large-cap proxy)", "Stocks (500)"]
+ETF_RANK_FACTORS = {
+    "Momentum (12-1)": "momentum",
+    "Trailing return": "trailing_return",
+    "Prior calendar-year return": "calendar_return",
+    "Low volatility": "low_volatility",
+    "High volatility": "volatility",
+    "High beta": "beta",
+    "Low beta": "low_beta",
+    "Shallowest drawdown": "max_drawdown",
+}
+ETF_WEIGHTS = {"Equal weight": "equal", "Inverse volatility": "inverse_vol",
+               "Market cap (snapshot)": "market_cap", "Manual": "manual"}
+ETF_BENCH = ["SPY", "QQQ", "IWM", "EFA", "AGG", "TLT", "GLD"]
+
+
+@st.cache_data(show_spinner="Loading prices…")
+def _etf_panel(tickers, start, end):
+    from ghost.data import providers
+    return providers.get_panel(tuple(sorted(set(tickers))), start=start or None,
+                               end=end or None, field="close")
+
+
+def _etf_sidebar():
+    st.sidebar.markdown(section("Fund design", 0), unsafe_allow_html=True)
+    use_preset = st.sidebar.radio("Start from", ["Preset", "Build your own"],
+                                  horizontal=True, key="etf_src")
+    spec = None
+    if use_preset == "Preset":
+        names = [p.name for p in etf_presets.PRESETS if p.enabled]
+        choice = st.sidebar.selectbox("Example fund", names, key="etf_preset")
+        spec = etf_presets.by_name(choice)
+        st.sidebar.caption(spec.notes)
+        disabled = [p.name for p in etf_presets.PRESETS if not p.enabled]
+        if disabled:
+            st.sidebar.caption("⏳ Needs Phase-2 fundamentals: " + "; ".join(disabled))
+    else:
+        sel_mode = st.sidebar.radio("Holdings", ["Explicit basket", "Screen & rank"],
+                                    key="etf_selmode")
+        weighting = ETF_WEIGHTS[st.sidebar.selectbox("Weighting", list(ETF_WEIGHTS),
+                                                     key="etf_w")]
+        max_w = st.sidebar.slider("Max weight per name", 0.05, 1.0, 1.0, 0.05, key="etf_maxw")
+        rebal = st.sidebar.selectbox("Rebalance", ["Weekly", "Monthly", "Quarterly",
+                                     "Biannual", "Annual"], index=1, key="etf_rebal")
+        manual = None
+        if sel_mode == "Explicit basket":
+            grp = st.sidebar.selectbox("Pick from", ETF_UNIVERSES, key="etf_eu")
+            opts = etf_screens.resolve_universe(grp)
+            picks = st.sidebar.multiselect("Holdings", opts, default=opts[:4], key="etf_picks")
+            custom = st.sidebar.text_input("Add tickers (comma-sep)", "", key="etf_custom")
+            for raw in custom.split(","):
+                if raw.strip():
+                    try:
+                        picks.append(clean_ticker(raw))
+                    except ValueError:
+                        pass
+            picks = list(dict.fromkeys(picks))
+            if weighting == "manual" and picks:
+                manual = {}
+                st.sidebar.caption("Relative manual weights:")
+                for t in picks:
+                    manual[t] = st.sidebar.number_input(t, 0.0, 100.0, 1.0, 0.5, key=f"etf_mw_{t}")
+            sel = etf_screens.SelectionSpec(explicit=picks)
+            direction = "long"
+        else:
+            uni = st.sidebar.selectbox("Universe", ETF_UNIVERSES, key="etf_uni")
+            if uni in ("IWB (large-cap proxy)", "Stocks (500)"):
+                st.sidebar.caption("⚠ First load fetches the whole universe — can take "
+                                   "a minute (then cached).")
+            rf = ETF_RANK_FACTORS[st.sidebar.selectbox("Rank by", list(ETF_RANK_FACTORS),
+                                                       key="etf_rf")]
+            lookback = int(st.sidebar.number_input("Lookback (trading days)", 21, 1000,
+                                                   252, 21, key="etf_lb"))
+            direction = st.sidebar.radio("Direction", ["long", "short", "long_short"],
+                                         horizontal=True, key="etf_dir")
+            top_n = int(st.sidebar.number_input("# long holdings", 1, 100, 10, 1, key="etf_topn"))
+            bottom_n = None
+            if direction in ("short", "long_short"):
+                bottom_n = int(st.sidebar.number_input("# short holdings", 1, 100, 10, 1,
+                                                       key="etf_botn"))
+            sel = etf_screens.SelectionSpec(universe=uni, rank_factor=rf,
+                                            rank_lookback=lookback, top_n=top_n,
+                                            bottom_n=bottom_n)
+        spec = etf_screens.ETFSpec(name="Custom fund", selection=sel, weighting=weighting,
+                                   rebalance=rebal, direction=direction,
+                                   manual_weights=manual, max_weight=max_w)
+
+    st.sidebar.markdown(section("Costs & fees", 1), unsafe_allow_html=True)
+    cap = st.sidebar.number_input("Backtest capital ($)", 10_000.0, 1e10, 1_000_000.0,
+                                  10_000.0, key="etf_cap")
+    cost = st.sidebar.number_input("Commission (bps)", 0.0, 50.0, 1.0, 0.5, key="etf_cost")
+    slip = st.sidebar.number_input("Slippage (bps)", 0.0, 50.0, 0.5, 0.5, key="etf_slip")
+    er = st.sidebar.number_input("Expense ratio (%/yr)", 0.0, 3.0, 0.40, 0.05,
+                                 key="etf_er") / 100.0
+    borrow = st.sidebar.number_input("Short borrow (bps/yr)", 0.0, 1000.0, 50.0, 10.0,
+                                     key="etf_borrow") if spec.direction != "long" else 0.0
+    cfg = etf_pf.PortfolioConfig(capital=cap, rebalance=spec.rebalance, cost_bps=cost,
+                                 slippage_bps=slip, expense_ratio_annual=er,
+                                 borrow_bps=borrow, max_weight=spec.max_weight,
+                                 direction=spec.direction)
+
+    st.sidebar.markdown(section("Timeframe & benchmark", 2), unsafe_allow_html=True)
+    c1, c2 = st.sidebar.columns(2)
+    start = c1.text_input("Start", "2015-01-01", key="etf_start")
+    end = c2.text_input("End", "", key="etf_end")
+    bench = st.sidebar.multiselect("Benchmarks", ETF_BENCH, default=["SPY"], key="etf_bench")
+    return spec, cfg, start, end, bench
+
+
+def run_etf_lab():
+    spec, cfg, start, end, bench = _etf_sidebar()
+    st.markdown(section(f"ETF Lab — {spec.name}", 0), unsafe_allow_html=True)
+    st.caption("Design a fund (pick holdings or screen & rank a universe), backtest it "
+               "with realistic costs & expense ratio, and compare it to benchmarks.")
+    st.warning("⚠ Free-data limits: the selection universe is **current** (survivorship "
+               "bias on historical backtests). Price/return/vol/beta factors are valid; "
+               "market-cap weighting uses a **current snapshot**.")
+
+    # assemble the ticker universe to load
+    need = set(etf_screens.resolve_universe(spec.selection.universe))
+    if spec.selection.explicit:
+        need = set(spec.selection.explicit)
+    need |= set(bench) | {"SPY"}
+    try:
+        panel = _etf_panel(tuple(need), start, end)
+    except Exception as e:
+        st.error(f"Price load failed: {e}")
+        return
+    if panel.empty:
+        st.info("No price data for this selection.")
+        return
+    market_close = panel["SPY"] if "SPY" in panel else panel.iloc[:, 0]
+
+    rebal_dts = etf_pf.rebalance_dates(panel.index, spec.rebalance)
+    ws = etf_screens.build_weight_schedule(spec, panel, rebal_dts, market_close)
+    if (ws.abs().sum(axis=1) == 0).all():
+        st.warning("This design selects no holdings over the chosen window — widen the "
+                   "universe, lower the lookback, or extend the dates.")
+        return
+    res = etf_pf.run_portfolio(panel, ws, cfg)
+
+    t_design, t_back, t_cmp, t_overlap, t_econ = st.tabs(
+        ["DESIGN", "BACKTEST", "COMPARE", "OVERLAP", "FUND ECONOMICS"])
+
+    # --- DESIGN: current holdings + weights ------------------------------------
+    with t_design:
+        st.markdown(section("Current holdings (latest rebalance)", 0), unsafe_allow_html=True)
+        latest = ws.iloc[-1]
+        latest = latest[latest != 0].sort_values(key=abs, ascending=False)
+        if latest.empty:
+            st.info("No holdings at the latest rebalance.")
+        else:
+            hold = pd.DataFrame({"Weight %": (latest * 100).round(2),
+                                 "Side": np.where(latest > 0, "LONG", "SHORT")})
+            st.dataframe(hold, use_container_width=True, height=320)
+            wfig = go.Figure(go.Bar(x=latest.index.astype(str), y=latest.values * 100,
+                marker_color=np.where(latest > 0, THEME.teal, THEME.coral)))
+            wfig.update_layout(title="HOLDING WEIGHTS (%)", yaxis_title="Weight %")
+            st.plotly_chart(style_fig(wfig, height=320), use_container_width=True)
+        st.caption(f"Universe loaded: {panel.shape[1]} tickers · {len(rebal_dts)} "
+                   f"{spec.rebalance.lower()} rebalances · weighting: {spec.weighting}.")
+
+    # --- BACKTEST --------------------------------------------------------------
+    with t_back:
+        log_y = st.checkbox("Log scale", False, key="etf_log", help=HELP["logscale"])
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=res.equity.index, y=res.equity, mode="lines",
+                                 name=spec.name, line=dict(color=THEME.teal, width=2)))
+        for b in bench:
+            if b in panel:
+                beq = (1 + panel[b].pct_change().fillna(0)).cumprod() * cfg.capital
+                fig.add_trace(go.Scatter(x=beq.index, y=beq, mode="lines",
+                              name=f"{b} (B&H)", line=dict(dash="dot")))
+        fig.update_layout(title=f"EQUITY CURVE — {spec.name}")
+        st.plotly_chart(style_fig(fig, log_y=log_y), use_container_width=True)
+
+        cc = st.columns(4)
+        cc[0].metric("Final equity", f"${res.stats['FinalEquity']:,.0f}")
+        cc[1].metric("Total return", f"{res.stats['TotalReturn%']:.1f}%")
+        cc[2].metric("CAGR", f"{res.stats['CAGR']*100:.1f}%")
+        cc[3].metric("Sharpe", f"{res.stats['Sharpe']:.2f}")
+        cc2 = st.columns(4)
+        cc2[0].metric("Ann. vol", f"{res.stats['AnnVol%']:.1f}%")
+        cc2[1].metric("Max drawdown", f"{res.stats['MaxDD']*100:.1f}%")
+        cc2[2].metric("Avg turnover/rebal", f"{res.stats['AvgTurnover']*100:.0f}%")
+        cc2[3].metric("Total cost paid", f"{res.stats['TotalCost%']:.2f}%")
+
+        st.markdown(section("Weights over time", 1), unsafe_allow_html=True)
+        nz = ws.columns[(ws != 0).any()]
+        afig = go.Figure()
+        for i, t in enumerate(nz):
+            wseries = res.weights[t].reindex(res.weights.index).fillna(0) * 100
+            afig.add_trace(go.Scatter(x=wseries.index, y=wseries, mode="lines",
+                stackgroup=None, name=t,
+                line=dict(width=1, color=THEME.series[i % len(THEME.series)])))
+        afig.update_layout(title="HOLDING WEIGHTS OVER TIME (%)", yaxis_title="Weight %")
+        st.plotly_chart(style_fig(afig, height=360), use_container_width=True)
+
+        st.markdown(section("Drawdown", 2), unsafe_allow_html=True)
+        dd = metrics.drawdown_series(res.returns) * 100
+        ddf = go.Figure(go.Scatter(x=dd.index, y=dd, fill="tozeroy",
+                        line=dict(color=THEME.coral)))
+        ddf.update_layout(title="DRAWDOWN (%)", yaxis_title="Drawdown %")
+        st.plotly_chart(style_fig(ddf, height=300), use_container_width=True)
+
+    # --- COMPARE ---------------------------------------------------------------
+    with t_cmp:
+        st.markdown(section("Fund vs benchmarks", 0), unsafe_allow_html=True)
+        series = {spec.name: res.returns}
+        for b in bench:
+            if b in panel:
+                series[b] = panel[b].pct_change()
+        rows = []
+        bench_ret0 = next((panel[b].pct_change() for b in bench if b in panel),
+                          market_close.pct_change())
+        for name, r in series.items():
+            r = r.dropna()
+            rows.append({
+                "Fund": name, "CAGR %": metrics.cagr(r) * 100,
+                "Sharpe": metrics.sharpe(r), "Ann Vol %": metrics.annual_vol(r) * 100,
+                "MaxDD %": metrics.max_drawdown(r) * 100,
+                "Up capture %": metrics.upside_capture(r, bench_ret0),
+                "Down capture %": metrics.downside_capture(r, bench_ret0),
+            })
+        st.dataframe(pd.DataFrame(rows).set_index("Fund").style.format("{:.2f}"),
+                     use_container_width=True)
+
+        st.markdown(section("Return correlation", 1), unsafe_allow_html=True)
+        corr = pd.DataFrame(series).dropna(how="all").corr()
+        if corr.shape[0] >= 2:
+            labels = [str(c) for c in corr.columns]
+            hm = go.Figure(go.Heatmap(z=corr.values, x=labels, y=labels, colorscale="RdBu",
+                zmid=0, zmin=-1, zmax=1, text=np.round(corr.values, 2),
+                texttemplate="%{text}", colorbar=dict(title="r")))
+            hm.update_layout(title="RETURN CORRELATION")
+            st.plotly_chart(style_fig(hm), use_container_width=True)
+
+    # --- OVERLAP ---------------------------------------------------------------
+    with t_overlap:
+        st.markdown(section("Holdings overlap", 0), unsafe_allow_html=True)
+        st.caption("Weighted overlap (Σ min weight) between your fund and each enabled "
+                   "preset. Third-party ETF holdings aren't free, so this compares funds "
+                   "built here.")
+        my_w = {t: float(v) for t, v in ws.iloc[-1].items() if v != 0}
+        st.markdown("**Your fund's current holdings**")
+        st.dataframe(pd.Series({t: round(w * 100, 2) for t, w in my_w.items()},
+                     name="Weight %").to_frame(), use_container_width=True, height=240)
+        compare = st.checkbox("Compare overlap against the preset funds "
+                              "(fetches their universes — may be slow)", False,
+                              key="etf_overlap_go")
+        baskets = {spec.name: my_w}
+        for p in (etf_presets.PRESETS if compare else []):
+            if not p.enabled:
+                continue
+            try:
+                pneed = set(etf_screens.resolve_universe(p.selection.universe))
+                if p.selection.explicit:
+                    pneed = set(p.selection.explicit)
+                ppanel = _etf_panel(tuple(pneed | {"SPY"}), start, end)
+                prd = etf_pf.rebalance_dates(ppanel.index, p.rebalance)
+                pws = etf_screens.build_weight_schedule(p, ppanel, prd[-1:],
+                        ppanel["SPY"] if "SPY" in ppanel else ppanel.iloc[:, 0])
+                baskets[p.name] = {t: float(v) for t, v in pws.iloc[-1].items() if v != 0}
+            except Exception:
+                continue
+        if len(baskets) >= 2:
+            m = etf_overlap.overlap_matrix(baskets)
+            hm = go.Figure(go.Heatmap(z=m.values.astype(float),
+                x=[str(c) for c in m.columns], y=[str(i) for i in m.index],
+                colorscale="Viridis", zmin=0, zmax=1, text=np.round(m.values.astype(float), 2),
+                texttemplate="%{text}"))
+            hm.update_layout(title="WEIGHTED HOLDINGS OVERLAP")
+            st.plotly_chart(style_fig(hm, height=420), use_container_width=True)
+        else:
+            st.info("Need at least two funds to compare overlap.")
+
+    # --- FUND ECONOMICS --------------------------------------------------------
+    with t_econ:
+        st.markdown(section("If you ran this fund…", 0), unsafe_allow_html=True)
+        st.caption("Issuer economics — all figures are planning estimates.")
+        c1, c2, c3 = st.columns(3)
+        aum = c1.number_input("AUM ($)", 1e6, 1e12, 100e6, 1e6, key="etf_aum")
+        er_pct = c2.number_input("Expense ratio (%/yr)", 0.0, 3.0,
+                                 cfg.expense_ratio_annual * 100, 0.05, key="etf_econ_er") / 100
+        growth = c3.number_input("Annual AUM growth (%)", -50.0, 200.0, 10.0, 5.0,
+                                 key="etf_growth") / 100
+        c4, c5, c6 = st.columns(3)
+        startup = c4.number_input("Startup cost ($)", 0.0, 1e8, 400_000.0, 50_000.0, key="etf_startup")
+        maint = c5.number_input("Annual maintenance ($)", 0.0, 1e8, 150_000.0, 25_000.0, key="etf_maint")
+        lic = c6.number_input("Index licensing (bps)", 0.0, 50.0, 3.0, 0.5, key="etf_lic")
+        econ_cfg = etf_econ.FundEconConfig(aum=aum, expense_ratio=er_pct,
+            expected_aum_growth=growth, startup_cost=startup, annual_maintenance=maint,
+            index_licensing_bps=lic, num_holdings=int((ws.iloc[-1] != 0).sum()))
+        years = int(st.slider("Years", 1, 15, 5, key="etf_years"))
+        edf = etf_econ.economics(econ_cfg, years)
+        ec = st.columns(3)
+        ec[0].metric("Yr-1 fee revenue", f"${edf.loc[1,'Revenue']:,.0f}")
+        ec[1].metric(f"Cumulative net (yr {years})", f"${edf.loc[years,'CumNetProfit']:,.0f}")
+        be = etf_econ.breakeven_aum(econ_cfg)
+        ec[2].metric("Breakeven AUM", "∞" if be == float("inf") else f"${be:,.0f}")
+        st.dataframe(edf.style.format("${:,.0f}"), use_container_width=True)
+        st.markdown(section("Investor fee drag", 1), unsafe_allow_html=True)
+        drag = etf_econ.investor_fee_drag(max(res.stats["CAGR"], 0.0), er_pct, years)
+        dc = st.columns(3)
+        dc[0].metric("Gross CAGR", f"{res.stats['CAGR']*100:.1f}%")
+        dc[1].metric("Net of fees", f"{drag['net_return_annual']*100:.1f}%")
+        dc[2].metric(f"Fee cost / $10k ({years}y)", f"${drag['fee_cost']:,.0f}")
 
 
 if __name__ == "__main__":

@@ -72,6 +72,22 @@ A sidebar **Mode** toggle switches between:
   VIX, RSI, MA touch, MA slope, regression bands; optional sell rules like the
   Mayer multiple) compared against fixed DCA and lump-sum buy & hold, with
   beta/alpha/correlation/drawdown stats and linear/log regression channels.
+- **ETF Lab** — design and backtest your own fund (`ghost/etf/`). Pick an
+  explicit basket or **screen & rank** a universe by a point-in-time price
+  factor (momentum / trailing or prior-calendar-year return / low-vol / beta /
+  drawdown), choose a **weighting** scheme (equal, inverse-vol, market-cap
+  snapshot, manual), a **rebalance** cadence (weekly→annual), and **long /
+  short / long-short** with a borrow-cost knob. Tabs: DESIGN (holdings &
+  weights), BACKTEST (equity vs benchmarks, weights-over-time, drawdown, costs &
+  turnover), COMPARE (risk/capture stats + correlation heatmap), OVERLAP
+  (weighted holdings overlap between funds), and **FUND ECONOMICS** (issuer P&L:
+  AUM, fee revenue, startup/maintenance/licensing costs, net profit, breakeven
+  AUM, investor fee drag).
+  - **Free-data honesty:** price/return/vol/beta factors are genuinely
+    point-in-time; the selection *universe* is current (survivorship caveat) and
+    market-cap weighting uses a current **snapshot**. Fundamental screens
+    (FCF/share, P/E, sector/industry, margin) are **Phase 2** — the spec exists
+    but is disabled until a fundamentals source lands. Banners surface this.
 
 Universe: ~500 curated liquid large/mid-cap stocks + ETFs (leveraged/inverse
 ETFs excluded by default).
