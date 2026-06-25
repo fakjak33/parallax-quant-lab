@@ -1,8 +1,9 @@
 """Ready-made example ETFs (the user's seven designs).
 
-Phase-1 presets are fully backtest-valid (price-derived). Phase-2 presets need
-the fundamental snapshot (FCF, margin, sector/industry) and are present but
-disabled until that layer lands.
+Phase-1 presets are fully backtest-valid (price-derived). Phase-2 presets use
+the fundamental snapshot (FCF, margin, sector/industry) — now wired up, but
+still carry a look-ahead/survivorship caveat (snapshot held constant across
+history), surfaced in the UI via ``screens.spec_is_lookahead``.
 """
 
 from __future__ import annotations
@@ -46,28 +47,40 @@ PRESETS: list[ETFSpec] = [
         selection=SelectionSpec(universe="IWB (large-cap proxy)",
                                 rank_factor="beta", top_n=5, bottom_n=5),
         weighting="equal", rebalance="Monthly", direction="long_short",
-        notes="Dollar-neutral high-minus-low beta. (The exact 'short least-"
-              "profitable' leg needs the Phase-2 fundamental snapshot.)",
+        notes="Dollar-neutral high-minus-low beta (price-derived, fully valid).",
     ),
-    # --- Phase 2 (need the fundamental snapshot) ---
+    # --- Phase 2 (use the fundamental snapshot — caveated) ---
+    ETFSpec(
+        name="Long top-5 beta / short 5 least-profitable (market-neutral)",
+        selection=SelectionSpec(universe="IWB (large-cap proxy)",
+                                rank_factor="beta",
+                                short_rank_factor="profit_margin",
+                                top_n=5, bottom_n=5),
+        weighting="equal", rebalance="Monthly", direction="long_short",
+        phase=2, enabled=True,
+        notes="The user's example 5 in full: long the 5 highest-beta names, short "
+              "the 5 lowest profit-margin names. Margin is a current snapshot → "
+              "look-ahead/survivorship caveat applies.",
+    ),
     ETFSpec(
         name="Free-cash-flow / share ≤ 3 (value)",
         selection=SelectionSpec(universe="IWB (large-cap proxy)",
                                 filters=[FilterRule("fcf_per_share", "<=", 3.0)]),
         weighting="equal", rebalance="Quarterly", direction="long",
-        phase=2, enabled=False,
-        notes="Phase 2: needs fundamental snapshot (FCF/share). Look-ahead/"
-              "survivorship caveat applies.",
+        phase=2, enabled=True,
+        notes="Holds every name with current FCF/share ≤ $3, equal-weighted. "
+              "Fundamental snapshot → look-ahead/survivorship caveat applies.",
     ),
     ETFSpec(
         name="Insurance names with 5-yr dividend growth",
         selection=SelectionSpec(universe="IWB (large-cap proxy)",
-                                rank_factor="dividend_growth",
-                                filters=[FilterRule("industry", "==", "Insurance")]),
+                                rank_factor="dividend_growth", top_n=20,
+                                filters=[FilterRule("industry", "contains", "insurance")]),
         weighting="equal", rebalance="Annual", direction="long",
-        phase=2, enabled=False,
-        notes="Phase 2: industry classification is a fundamental snapshot; "
-              "dividend growth itself is price-history valid.",
+        phase=2, enabled=True,
+        notes="Insurance industry (snapshot) ranked by 5-yr dividend growth "
+              "(dividend history is point-in-time valid; the industry tag is a "
+              "snapshot → survivorship caveat).",
     ),
 ]
 

@@ -12,9 +12,14 @@ import pandas as pd
 
 from . import factors
 
-METHODS = ("equal", "inverse_vol", "vol_target", "market_cap", "manual")
+METHODS = ("equal", "inverse_vol", "vol_target", "market_cap",
+           "fcf_weighted", "revenue_weighted", "manual")
 # weighting methods that rely on the fundamental snapshot (class B, caveated)
-SNAPSHOT_METHODS = ("market_cap",)
+SNAPSHOT_METHODS = ("market_cap", "fcf_weighted", "revenue_weighted")
+
+# snapshot-weighting method -> the fundamentals field it weights by
+_SNAPSHOT_FIELD = {"market_cap": "market_cap", "fcf_weighted": "fcf_per_share",
+                   "revenue_weighted": "revenue"}
 
 
 def _cap_normalize(w: pd.Series, max_weight: float) -> pd.Series:
@@ -55,10 +60,11 @@ def compute(method: str, tickers: list[str], panel: pd.DataFrame, asof=None,
         vol = factors.volatility(panel[tickers], asof, vol_lookback).reindex(tickers)
         inv = 1.0 / vol.replace(0.0, np.nan)
         w = inv.fillna(inv.median() if inv.notna().any() else 1.0)
-    elif method == "market_cap":
+    elif method in _SNAPSHOT_FIELD:
         from . import fundamentals
-        caps = fundamentals.market_caps(tickers).reindex(tickers)
-        w = caps.fillna(caps.median() if caps.notna().any() else 1.0)
+        vals = fundamentals.factor_series(tickers, _SNAPSHOT_FIELD[method]).reindex(tickers)
+        vals = vals.clip(lower=0.0)        # negative FCF/cap can't be a positive weight
+        w = vals.fillna(vals[vals > 0].median() if (vals > 0).any() else 1.0)
         if w.sum() <= 0:
             w = pd.Series(1.0, index=tickers)
     else:  # equal (default)

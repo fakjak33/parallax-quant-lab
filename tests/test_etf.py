@@ -142,12 +142,92 @@ def test_overlap_edges():
 
 
 # --- presets + spec ---------------------------------------------------------
-def test_presets_phase1_not_lookahead():
+def test_preset_lookahead_matches_phase():
+    # Phase-1 presets are price-derived (never look-ahead); Phase-2 presets all
+    # touch the fundamental snapshot, so they must flag look-ahead.
     for p in presets.PRESETS:
-        if p.enabled:
-            assert screens.spec_is_lookahead(p) is False
+        if p.phase == 1:
+            assert screens.spec_is_lookahead(p) is False, p.name
         else:
-            assert p.phase == 2
+            assert screens.spec_is_lookahead(p) is True, p.name
+
+
+# --- Phase 2: fundamental filters / ranking ---------------------------------
+def _patch_snapshot(monkeypatch, table):
+    """Stub fundamentals.snapshot with a fixed in-memory table (tickers x fields)."""
+    df = pd.DataFrame(table).T
+    df["fetched_at"] = 0.0
+
+    def fake_snapshot(tickers, max_age_days=30, fields=None):
+        idx = [t.upper() for t in tickers]
+        cols = (list(fields) if fields else [c for c in df.columns if c != "fetched_at"])
+        return df.reindex(index=idx, columns=cols + ["fetched_at"])
+
+    monkeypatch.setattr(screens.fundamentals, "snapshot", fake_snapshot)
+
+
+def test_numeric_filter_applies(monkeypatch):
+    panel = _panel(tickers=("A", "B", "C"))
+    _patch_snapshot(monkeypatch, {
+        "A": {"fcf_per_share": 1.0}, "B": {"fcf_per_share": 5.0},
+        "C": {"fcf_per_share": 2.0}})
+    spec = screens.ETFSpec(name="fcf", selection=screens.SelectionSpec(
+        universe=list(panel.columns),
+        filters=[screens.FilterRule("fcf_per_share", "<=", 3.0)]))
+    longs, shorts = screens.selected_at(spec, panel, panel.index[-1])
+    assert set(longs) == {"A", "C"} and shorts == []
+
+
+def test_string_filter_contains(monkeypatch):
+    panel = _panel(tickers=("A", "B", "C"))
+    _patch_snapshot(monkeypatch, {
+        "A": {"industry": "Insurance—Life"}, "B": {"industry": "Software"},
+        "C": {"industry": "Property & Casualty Insurance"}})
+    spec = screens.ETFSpec(name="ins", selection=screens.SelectionSpec(
+        universe=list(panel.columns),
+        filters=[screens.FilterRule("industry", "contains", "insurance")]))
+    longs, _ = screens.selected_at(spec, panel, panel.index[-1])
+    assert set(longs) == {"A", "C"}
+
+
+def test_fundamental_rank_value_tilt(monkeypatch):
+    panel = _panel(tickers=("A", "B", "C"))
+    _patch_snapshot(monkeypatch, {
+        "A": {"trailing_pe": 30.0}, "B": {"trailing_pe": 8.0},
+        "C": {"trailing_pe": 15.0}})
+    spec = screens.ETFSpec(name="val", selection=screens.SelectionSpec(
+        universe=list(panel.columns), rank_factor="low_pe", top_n=1))
+    longs, _ = screens.selected_at(spec, panel, panel.index[-1])
+    assert longs == ["B"]                # lowest P/E ranks first for "low_pe"
+    assert screens.spec_is_lookahead(spec) is True
+
+
+def test_separate_short_leg_factor(monkeypatch):
+    panel = _panel(tickers=("A", "B", "C", "D"))
+    _patch_snapshot(monkeypatch, {
+        t: {"profit_margin": m} for t, m in
+        zip("ABCD", [0.30, 0.05, 0.20, 0.10])})
+    # long the highest trailing return, short the lowest profit margin
+    spec = screens.ETFSpec(name="ex5", selection=screens.SelectionSpec(
+        universe=list(panel.columns), rank_factor="trailing_return",
+        short_rank_factor="profit_margin", rank_lookback=60, top_n=1, bottom_n=1),
+        direction="long_short")
+    longs, shorts = screens.selected_at(spec, panel, panel.index[-1])
+    assert shorts == ["B"]              # B has the lowest margin
+    assert longs and longs[0] not in shorts
+
+
+def test_fcf_weighting(monkeypatch):
+    panel = _panel(tickers=("A", "B"))
+
+    def fake_series(tickers, field, max_age_days=30):
+        return pd.Series({"A": 3.0, "B": 1.0}).reindex([t.upper() for t in tickers])
+
+    from ghost.etf import fundamentals as fund
+    monkeypatch.setattr(fund, "factor_series", fake_series)
+    w = weighting.compute("fcf_weighted", ["A", "B"], panel)
+    assert abs(sum(w.values()) - 1.0) < 1e-9
+    assert w["A"] > w["B"]              # higher FCF → higher weight
 
 
 def test_explicit_basket_equal_weights():
