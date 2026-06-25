@@ -968,17 +968,43 @@ def run_accum_lab():
 ETF_UNIVERSES = ["Sector ETFs", "Broad ETFs", "Industry ETFs", "Futures-like ETFs",
                  "IWB (large-cap proxy)", "Stocks (500)"]
 ETF_RANK_FACTORS = {
-    "Momentum (12-1)": "momentum",
-    "Trailing return": "trailing_return",
-    "Prior calendar-year return": "calendar_return",
-    "Low volatility": "low_volatility",
-    "High volatility": "volatility",
-    "High beta": "beta",
-    "Low beta": "low_beta",
-    "Shallowest drawdown": "max_drawdown",
+    # Class A — price/returns-derived (fully backtest-valid)
+    "📈 Momentum (12-1)": "momentum",
+    "📈 Trailing return": "trailing_return",
+    "📈 Prior calendar-year return": "calendar_return",
+    "📈 Low volatility": "low_volatility",
+    "📈 High volatility": "volatility",
+    "📈 High beta": "beta",
+    "📈 Low beta": "low_beta",
+    "📈 Shallowest drawdown": "max_drawdown",
+    "📈 5-yr dividend growth": "dividend_growth",
+    # Class B — fundamental snapshot (look-ahead/survivorship caveat)
+    "📊 Low P/E (value)": "low_pe",
+    "📊 Low forward P/E": "low_forward_pe",
+    "📊 High FCF / share": "fcf_per_share",
+    "📊 High revenue": "revenue",
+    "📊 High profit margin": "profit_margin",
+    "📊 Low profit margin": "low_profit_margin",
+    "📊 Low price/book (value)": "low_price_to_book",
+    "📊 High dividend yield": "dividend_yield",
 }
 ETF_WEIGHTS = {"Equal weight": "equal", "Inverse volatility": "inverse_vol",
-               "Market cap (snapshot)": "market_cap", "Manual": "manual"}
+               "Market cap (snapshot)": "market_cap",
+               "FCF-weighted (snapshot)": "fcf_weighted",
+               "Revenue-weighted (snapshot)": "revenue_weighted", "Manual": "manual"}
+# Fundamental fields the filter builder can screen on (label -> (field, is_text)).
+ETF_FILTER_FIELDS = {
+    "FCF / share ($)": ("fcf_per_share", False),
+    "Trailing P/E": ("pe", False),
+    "Forward P/E": ("forward_pe", False),
+    "Price / book": ("price_to_book", False),
+    "Profit margin": ("profit_margin", False),
+    "Dividend yield": ("dividend_yield", False),
+    "Revenue ($)": ("revenue", False),
+    "Market cap ($)": ("market_cap_value", False),
+    "Sector": ("sector", True),
+    "Industry": ("industry", True),
+}
 ETF_BENCH = ["SPY", "QQQ", "IWM", "EFA", "AGG", "TLT", "GLD"]
 
 
@@ -987,6 +1013,34 @@ def _etf_panel(tickers, start, end):
     from ghost.data import providers
     return providers.get_panel(tuple(sorted(set(tickers))), start=start or None,
                                end=end or None, field="close")
+
+
+def _etf_filter_builder():
+    """Sidebar UI to compose optional fundamental-snapshot filters (class B)."""
+    n = int(st.sidebar.number_input("# fundamental filters", 0, 4, 0, 1, key="etf_nfilt"))
+    if n:
+        st.sidebar.caption("⚠ Fundamental filters use a **current snapshot** (look-ahead) "
+                           "and fetch per-name data — first run on a big universe is slow.")
+    rules = []
+    for i in range(n):
+        label = st.sidebar.selectbox(f"Filter {i+1} field", list(ETF_FILTER_FIELDS),
+                                     key=f"etf_filt_fld_{i}")
+        field, is_text = ETF_FILTER_FIELDS[label]
+        c1, c2 = st.sidebar.columns([1, 2])
+        if is_text:
+            op = c1.selectbox("op", ["contains", "==", "!="], key=f"etf_filt_op_{i}",
+                              label_visibility="collapsed")
+            val = c2.text_input("value", "", key=f"etf_filt_val_{i}",
+                                label_visibility="collapsed", placeholder="e.g. Insurance")
+            if val.strip():
+                rules.append(etf_screens.FilterRule(field, op, val.strip()))
+        else:
+            op = c1.selectbox("op", ["<=", ">=", "<", ">"], key=f"etf_filt_op_{i}",
+                              label_visibility="collapsed")
+            val = c2.number_input("value", value=0.0, step=1.0, format="%g",
+                                  key=f"etf_filt_val_{i}", label_visibility="collapsed")
+            rules.append(etf_screens.FilterRule(field, op, float(val)))
+    return rules
 
 
 def _etf_sidebar():
@@ -1043,12 +1097,20 @@ def _etf_sidebar():
                                          horizontal=True, key="etf_dir")
             top_n = int(st.sidebar.number_input("# long holdings", 1, 100, 10, 1, key="etf_topn"))
             bottom_n = None
+            short_rf = None
             if direction in ("short", "long_short"):
                 bottom_n = int(st.sidebar.number_input("# short holdings", 1, 100, 10, 1,
                                                        key="etf_botn"))
+                if st.sidebar.checkbox("Rank the short leg separately", False,
+                                       key="etf_short_sep"):
+                    short_rf = ETF_RANK_FACTORS[st.sidebar.selectbox(
+                        "Short leg ranked by (shorts the lowest)",
+                        list(ETF_RANK_FACTORS), key="etf_short_rf")]
+            filters = _etf_filter_builder()
             sel = etf_screens.SelectionSpec(universe=uni, rank_factor=rf,
+                                            short_rank_factor=short_rf,
                                             rank_lookback=lookback, top_n=top_n,
-                                            bottom_n=bottom_n)
+                                            bottom_n=bottom_n, filters=filters)
         spec = etf_screens.ETFSpec(name="Custom fund", selection=sel, weighting=weighting,
                                    rebalance=rebal, direction=direction,
                                    manual_weights=manual, max_weight=max_w)
@@ -1083,6 +1145,12 @@ def run_etf_lab():
     st.warning("⚠ Free-data limits: the selection universe is **current** (survivorship "
                "bias on historical backtests). Price/return/vol/beta factors are valid; "
                "market-cap weighting uses a **current snapshot**.")
+    if etf_screens.spec_is_lookahead(spec):
+        st.error("🔴 **Look-ahead in this design.** It screens, ranks, or weights on the "
+                 "**fundamental snapshot** (P/E, FCF, margin, sector/industry) — today's "
+                 "values applied to the whole history. Treat the backtest as illustrative, "
+                 "not a true historical result. Price-derived factors (left of the 📊) are "
+                 "unaffected.")
 
     # assemble the ticker universe to load
     need = set(etf_screens.resolve_universe(spec.selection.universe))
@@ -1127,6 +1195,17 @@ def run_etf_lab():
             st.plotly_chart(style_fig(wfig, height=320), use_container_width=True)
         st.caption(f"Universe loaded: {panel.shape[1]} tickers · {len(rebal_dts)} "
                    f"{spec.rebalance.lower()} rebalances · weighting: {spec.weighting}.")
+
+        if not latest.empty and st.checkbox("Show fundamental snapshot of holdings",
+                                            False, key="etf_show_fund"):
+            from ghost.etf import fundamentals as etf_fund
+            with st.spinner("Fetching fundamental snapshot (current values)…"):
+                snap = etf_fund.snapshot(list(latest.index))
+            cols = ["sector", "industry", "trailing_pe", "forward_pe",
+                    "fcf_per_share", "profit_margin", "dividend_yield", "market_cap"]
+            cols = [c for c in cols if c in snap.columns]
+            st.dataframe(snap[cols], use_container_width=True)
+            st.caption("Snapshot = today's values (no history). Illustrative only.")
 
     # --- BACKTEST --------------------------------------------------------------
     with t_back:
