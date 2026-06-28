@@ -24,6 +24,7 @@ from ghost.accumulation.regression import regression_channel
 from ghost.backtest.engine import run_single
 from ghost.backtest.spectrum import run_spectrum, run_spectrum_2d, make_spectrum
 from ghost.backtest.diagnostics import return_correlation, walk_forward, beta_and_correlation
+from ghost.backtest import returns_dist, underlying_corr
 from ghost.backtest.trades import extract_trades
 from ghost.backtest import montecarlo, metrics, kelly
 from ghost.etf import portfolio as etf_pf, screens as etf_screens, presets as etf_presets
@@ -172,7 +173,11 @@ def sidebar():
         cfg["kind"] = st.sidebar.selectbox("Synthetic kind",
             ["trending", "mean_reverting", "gbm", "regime", "fat_tailed"])
         cfg["n_days"] = st.sidebar.number_input("Days", 300, 6000, 1500, 100)
-        cfg["seed"] = int(st.sidebar.number_input("Seed", value=42, step=1, help=HELP["seed"]))
+        # seed lives in session_state under "synth_seed" so the backtest-page quick
+        # control can set it and rerun; widget reads it via key (no value= → no warn)
+        st.session_state.setdefault("synth_seed", 42)
+        cfg["seed"] = int(st.sidebar.number_input("Seed", step=1, key="synth_seed",
+                                                  help=HELP["seed"]))
         cfg["n_assets"] = st.sidebar.number_input("Synthetic assets", 1, 12, 4)
 
     sb("Timeframe", 2)
@@ -329,6 +334,70 @@ def main():
         run_rnd()
 
 
+def render_return_distribution(returns_by_label, native_tf, key):
+    """Shared: interval-return distribution + skew chart for any backtest page."""
+    st.markdown(section("Interval-return distribution & skew", 2), unsafe_allow_html=True)
+    st.caption("Distribution of returns at a chosen interval. Skew tells you the shape: "
+               "positive = occasional big winners, negative = occasional big losers.")
+    labels = list(returns_by_label)
+    if not labels:
+        st.info("No return series to analyze yet.")
+        return
+    c1, c2 = st.columns([2, 1])
+    pick = c1.selectbox("Series", labels, key=f"{key}_rd_series")
+    interval = c2.selectbox("Interval", list(returns_dist.INTERVALS), key=f"{key}_rd_interval")
+    r, eff = returns_dist.interval_returns(returns_by_label[pick], native_tf, interval)
+    summ = returns_dist.skew_summary(r)
+    if summ["n"] < 5:
+        st.info("Not enough observations at this interval for a distribution.")
+        return
+    cc = st.columns(4)
+    cc[0].metric("Skew", f"{summ['skew']:+.2f}", summ["label"])
+    cc[1].metric("Mean", f"{summ['mean']*100:+.2f}%")
+    cc[2].metric("Median", f"{summ['median']*100:+.2f}%")
+    cc[3].metric("Std", f"{summ['std']*100:.2f}%")
+    fig = returns_dist.distribution_figure(r, summ, THEME,
+                                           title=f"{pick} — {eff} returns")
+    st.plotly_chart(style_fig(fig, height=360), use_container_width=True)
+
+
+def render_underlying_correlation(strategy_returns, instrument, tf, start, end, key,
+                                  profit_line=None, synthetic=False, seed_state_key=None):
+    """Shared: correlation/beta of a strategy vs standard underlyings, plus an
+    optional profitability line and (synthetic) a quick seed-flip control."""
+    st.markdown(section("Strategy vs underlyings — correlation & seed check", 4),
+                unsafe_allow_html=True)
+    if profit_line:
+        st.caption(profit_line)
+    # quick seed flip for synthetic mode — writes the sidebar seed widget's own
+    # session_state key then reruns, so profit + correlation refresh instantly
+    if synthetic and seed_state_key:
+        sc1, sc2 = st.columns([1, 1])
+        cur = int(st.session_state.get(seed_state_key, 42))
+        new = sc1.number_input("Seed (synthetic)", value=cur, step=1, key=f"{key}_seed_box")
+        if int(new) != cur:
+            st.session_state[seed_state_key] = int(new)
+            st.rerun()
+        if sc2.button("🎲 New random seed", key=f"{key}_seed_btn"):
+            st.session_state[seed_state_key] = int(np.random.randint(1, 10_000))
+            st.rerun()
+    panel = underlying_corr.correlation_panel(strategy_returns, tf, start, end,
+                                              extra=(instrument,) if instrument else ())
+    if panel.empty:
+        st.info("Could not compute underlying correlations (no overlapping data).")
+        return
+    ctab, cheat = st.columns([1, 1])
+    ctab.dataframe(panel.style.format({"Correlation": "{:+.2f}", "Beta": "{:+.2f}",
+                                       "Obs": "{:.0f}"}), use_container_width=True)
+    hm = go.Figure(go.Heatmap(
+        z=[panel["Correlation"].values], x=list(panel.index), y=["strategy"],
+        colorscale="RdBu", zmid=0, zmin=-1, zmax=1,
+        text=[np.round(panel["Correlation"].values, 2)], texttemplate="%{text}",
+        colorbar=dict(title="r")))
+    hm.update_layout(title="CORRELATION TO UNDERLYINGS")
+    cheat.plotly_chart(style_fig(hm, height=240), use_container_width=True)
+
+
 def run_rnd():
     cfg = sidebar()
     data = load_data(cfg)
@@ -426,6 +495,23 @@ def run_rnd():
         table = pd.DataFrame({lbl: r.stats for lbl, (r, _) in results.items()}).T
         table["FinalEquity"] = [r.equity.iloc[-1] for (r, _) in results.values()]
         st.dataframe(table.style.format("{:.3f}"), use_container_width=True)
+
+        # --- interval-return distribution + skew (per strategy) -------------
+        render_return_distribution(
+            {lbl: r.returns for lbl, (r, _) in results.items()}, tf, key="rnd")
+
+        # --- correlation to standard underlyings + quick seed check ---------
+        corr_lbl = st.selectbox("Strategy for correlation", list(results), key="rnd_corr_pick")
+        corr_res = results[corr_lbl][0]
+        fe = float(corr_res.equity.iloc[-1])
+        profit = (f"**{corr_lbl}** — final equity ${fe:,.0f} · "
+                  f"total return {(fe/bt.capital-1)*100:+.1f}% · "
+                  f"Sharpe {corr_res.stats.get('Sharpe', float('nan')):.2f}")
+        render_underlying_correlation(corr_res.returns, instrument, tf,
+                                      cfg.get("start"), cfg.get("end"),
+                                      key="rnd", profit_line=profit,
+                                      synthetic=cfg["mode"].startswith("Synth"),
+                                      seed_state_key="synth_seed")
 
     # --- SPECTRUM (+ beta/correlation) -------------------------------------
     with tabs[1]:
@@ -731,7 +817,8 @@ def run_accum_lab():
         cfg["kind"] = st.sidebar.selectbox("Synthetic kind",
             ["trending", "mean_reverting", "gbm", "regime", "fat_tailed"], key="acc_kind")
         cfg["n_days"] = st.sidebar.number_input("Days", 300, 6000, 2000, 100, key="acc_days")
-        cfg["seed"] = int(st.sidebar.number_input("Seed", value=42, step=1, key="acc_seed"))
+        st.session_state.setdefault("acc_seed", 42)
+        cfg["seed"] = int(st.sidebar.number_input("Seed", step=1, key="acc_seed"))
         cfg["n_assets"] = 1
         ticker = "SYNTH_1"
 
@@ -943,6 +1030,17 @@ def run_accum_lab():
                                     "ReturnOnContributed%", "ReturnOnDeployed%",
                                     "AnnVol%", "MaxDD%", "Beta", "Alpha(ann)%", "Corr"]]
         st.dataframe(tbl.style.format("{:.2f}"), use_container_width=True)
+
+        # --- interval-return distribution + skew (accumulation equity) ------
+        accum_ret = res.equity.pct_change().dropna()
+        render_return_distribution({buy_label: accum_ret}, cfg.get("tf", "Daily"), key="accum")
+
+        # --- correlation to standard underlyings + quick seed check ---------
+        fe = float(res.equity.iloc[-1])
+        render_underlying_correlation(
+            accum_ret, ticker, cfg.get("tf", "Daily"), cfg.get("start"), cfg.get("end"),
+            key="accum", profit_line=f"**{buy_label}** — final equity ${fe:,.0f}",
+            synthetic=src_mode.startswith("Synth"), seed_state_key="acc_seed")
 
     with t_reg:
         st.caption("Linear/log regression channel with ±k·σ bands — buy near the "
@@ -1249,6 +1347,17 @@ def run_etf_lab():
                         line=dict(color=THEME.coral)))
         ddf.update_layout(title="DRAWDOWN (%)", yaxis_title="Drawdown %")
         st.plotly_chart(style_fig(ddf, height=300), use_container_width=True)
+
+        # --- interval-return distribution + skew (portfolio returns) --------
+        render_return_distribution({spec.name: res.returns}, "Daily", key="etf")
+
+        # --- correlation to standard underlyings ----------------------------
+        fe = float(res.equity.iloc[-1]) if hasattr(res, "equity") else float("nan")
+        render_underlying_correlation(
+            res.returns, None, "Daily", None, None, key="etf",
+            profit_line=f"**{spec.name}** — total return "
+                        f"{res.stats.get('TotalReturn%', float('nan')):.1f}%",
+            synthetic=False)
 
     # --- COMPARE ---------------------------------------------------------------
     with t_cmp:
