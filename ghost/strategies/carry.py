@@ -27,6 +27,33 @@ class CarryProxy(Strategy):
     }
     spectrum_param = "lookback"
 
+    plain = (
+        "Favours assets that reward you just for holding them, measured here by their "
+        "long-run tendency to drift upward relative to how risky they are."
+    )
+    analogy = (
+        "Like choosing a rental property by its rent-to-price ratio rather than guessing "
+        "whether house prices will rise. You get paid for holding it, regardless."
+    )
+    how_it_works = (
+        "Measure the asset's annualised return over a long window - about a year by default.",
+        "Divide by how volatile it is, giving return per unit of risk.",
+        "Smooth the result so it changes slowly.",
+        "A high value means holding is well rewarded - buy it.",
+    )
+    works_when = "Assets with a genuine structural yield: bonds, dividend payers, some commodities."
+    fails_when = (
+        "Carry trades famously 'go up by the stairs and down by the elevator' - they earn "
+        "steadily and then lose a lot at once in a crisis."
+    )
+    evidence = (
+        "IMPORTANT CAVEAT: this is a *stand-in*, not real carry. True carry needs yield or "
+        "futures roll data, which this app does not have on the free data feed. It uses "
+        "long-run risk-adjusted drift as a proxy, which behaves like a very slow trend "
+        "rule. Real carry is well supported academically; treat this particular "
+        "implementation as a placeholder until proper yield data is wired in."
+    )
+
     def raw_forecast(self, ohlcv: pd.DataFrame) -> pd.Series:
         close = ohlcv["close"]
         lb = int(self.values["lookback"])

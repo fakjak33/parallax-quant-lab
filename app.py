@@ -5,6 +5,10 @@ Run with:  streamlit run app.py
 
 from __future__ import annotations
 
+import subprocess
+from contextlib import contextmanager
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -40,44 +44,55 @@ st.markdown(BANNER, unsafe_allow_html=True)
 
 MAX_TICKERS = 12
 
+# Help text convention: PLAIN SENTENCE FIRST, technical detail in parentheses
+# after. A reader who knows nothing about finance should get the first sentence.
 HELP = {
-    "mode": "Real pulls actual price history from Yahoo Finance. Synthetic generates fake data with known behavior to validate strategies.",
-    "capital": "Starting account equity. All P/L and position sizes scale from this.",
-    "sizing": "How a forecast becomes a position size. Vol target = constant risk (Carver). % of capital / $ notional = fixed exposure regardless of volatility.",
-    "vol_target": "Volatility targeting scales positions so the strategy aims for a constant annual risk level.",
-    "target_vol": "Annualized volatility the strategy targets, e.g. 0.20 = 20%/yr.",
-    "direction": "Restrict trades: 'both' allows long & short, 'long' only buys, 'short' only sells.",
-    "stop": "Stop-loss: exit a losing trade. ATR adapts to volatility (k×ATR); Percent uses a fixed % move. Trailing ratchets the stop in your favor.",
-    "tp": "Take-profit: exit a winning trade at a target. ATR uses k×ATR; Percent uses a fixed % move.",
-    "timeframe": "Bar frequency. Day-based parameters (fast/slow/lookback) are auto-scaled to the chosen candle so a '60' means ~60 trading days at any frequency.",
-    "cost": "Transaction cost on traded notional, in basis points (1 bp = 0.01%).",
-    "slippage": "Estimated execution slippage (half-spread) in basis points.",
-    "sweep": "Run the strategy across a range of one (or two) parameters at once. Look for a broad plateau (robust) rather than a single lucky spike (overfit).",
-    "seed": "Random seed for synthetic data — change it for a different fake price path.",
-    "corr": "How correlated two strategies' daily returns are. Near 0 = diversifying; near 1 = redundant. Carver combines low-correlation rules.",
-    "beta": "Beta = sensitivity of the strategy's returns to the underlying ETF's returns. Correlation = how tightly they move together (-1 to 1). Low beta/correlation means the strategy is market-neutral-ish.",
-    "walkforward": "Splits history into segments and compares in-sample (fitted period) vs out-of-sample (later, unseen period) Sharpe. A big drop OOS warns of overfitting.",
-    "montecarlo": "Resamples the daily returns in blocks many times to build a distribution of possible outcomes, instead of trusting the single historical path.",
-    "kelly": "The Kelly criterion gives the growth-optimal bet size. Full Kelly maximizes long-run growth but is very swingy; most use half- or quarter-Kelly.",
-    "drawdown": "Drawdown = % below the prior equity peak. Shows pain/risk over time vs just buying and holding the underlying.",
-    "capture": "Upside capture = how much of the underlying's up-day return the strategy captures (>100% = amplifies gains). Downside capture = same for down days (<100% = cushions losses).",
-    "delay": "Wait a fixed number of bars after a signal fires before acting (e.g. confirm an EMA cross for 5 candles before entering). Entry delay applies to opening/adding; exit delay to closing/trimming.",
-    "logscale": "Log scale spaces equal % moves equally — better for long histories and comparing assets at different price levels. Linear shows absolute dollar moves.",
-    "mc_pct": "Distribution across all bootstrap simulations: p5 = pessimistic (5th percentile), p50 = median, p95 = optimistic (95th). A wide p5→p95 gap means the result is luck-sensitive.",
-    "kelly_full": "Full Kelly: the growth-optimal leverage = mean/variance of returns. Maximizes long-run compounding but is very volatile and unforgiving of estimation error.",
-    "kelly_half": "Half Kelly: half the full-Kelly leverage. ~75% of the growth with far less volatility — the common practical choice.",
-    "kelly_quarter": "Quarter Kelly: a conservative quarter of full Kelly, for when return estimates are uncertain.",
-    "wf_color": "IS = in-sample (earlier, 'fitted' period); OOS = out-of-sample (later, unseen). Green IS = healthy Sharpe; green OOS = the edge held up out-of-sample; red OOS = it decayed (overfitting warning).",
-    "corr_under": "Add underlyings (SPY, TLT, GLD…) to see how your strategies' returns correlate with real assets — not just with each other.",
+    "mode": "Real uses actual price history from Yahoo Finance. Synthetic makes up fake prices that behave in a way we already know, so you can check a strategy does what it should before trusting it on real data.",
+    "capital": "How much money you are pretending to start with. Everything else — profits, position sizes — scales from this number.",
+    "sizing": "How a signal turns into an actual trade size. 'Volatility target' trades smaller in wild markets and bigger in calm ones, keeping your risk steady. The other two just risk a fixed amount regardless.",
+    "vol_target": "Trades smaller when the market is wild and bigger when it is calm, so your risk stays roughly the same all the time.",
+    "target_vol": "How bumpy a ride you are aiming for, per year. 0.20 means you are willing to see your account swing about 20% in a typical year.",
+    "direction": "Which bets are allowed. 'Long' only bets on prices rising, 'short' only on them falling, 'both' allows either.",
+    "stop": "An automatic exit that cuts a losing trade before it gets worse. ATR sizes the exit to how jumpy the market is; Percent uses a fixed distance. 'Trailing' moves the exit up behind you as the trade goes your way.",
+    "tp": "An automatic exit that banks a winning trade once it has made enough. ATR sizes the target to market jumpiness; Percent uses a fixed distance.",
+    "timeframe": "How long one bar on the chart covers — a day, a week, or a month. Settings written in days are converted automatically, so '60' still means about 60 trading days whichever you pick.",
+    "cost": "What you pay the broker on every trade, in basis points (1 bp = 0.01%). Tiny per trade, brutal for a strategy that trades daily — worth raising to see which strategies survive.",
+    "slippage": "The extra you lose because your order does not fill at the exact price you saw. Also in basis points.",
+    "sweep": "Runs the strategy again and again across a whole range of settings at once. You want a broad hill where lots of nearby settings all work — one lonely spike means you found a fluke, not an edge.",
+    "seed": "Changes the fake price history. Same seed = same made-up prices. Flip it to check your result was not one lucky path.",
+    "corr": "Whether two strategies win and lose at the same times. Near 0 means they are genuinely different bets and help each other; near 1 means you are effectively running the same strategy twice.",
+    "beta": "Beta says how much the strategy moves when the market moves (1 = moves with it, 0 = does its own thing). Correlation says how tightly the two track each other, from -1 to +1. Low on both means you are not just holding the market in disguise.",
+    "walkforward": "Tests the strategy on a stretch of history it was never tuned on. If it does much worse there, the good result was probably luck. (Splits history into in-sample and out-of-sample windows and compares Sharpe.)",
+    "montecarlo": "Shuffles your actual results thousands of times to ask 'how much of this was luck?'. If the reshuffled outcomes vary wildly, the one history you happened to get does not tell you much.",
+    "kelly": "The bet size that grows money fastest in theory. In practice full Kelly is brutally volatile, so most people use half or a quarter of it.",
+    "drawdown": "How far below its best-ever value the account has fallen. This is the number that actually makes people quit — a 50% drawdown needs a 100% gain just to break even.",
+    "capture": "Upside capture: how much of the market's good days you keep (over 100% means you amplify them). Downside capture: how much of the bad days you take (under 100% means you cushion them). The dream is high upside, low downside.",
+    "delay": "Wait a set number of bars after a signal before actually trading, to check the signal sticks. Useful for testing whether your edge survives being slow.",
+    "logscale": "Changes how the chart is drawn. Log scale makes a 10% move look the same size whether the price is $5 or $500 — better for long histories. Linear shows raw dollar moves.",
+    "mc_pct": "The range of outcomes across all the reshuffles: p5 is a bad-luck result, p50 typical, p95 a lucky one. A huge gap between p5 and p95 means your result depended heavily on luck.",
+    "kelly_full": "Full Kelly: the theoretically fastest-growing bet size. Also wild enough that it can halve your account and still be mathematically 'correct'.",
+    "kelly_half": "Half Kelly: half the aggression, about three quarters of the growth, far less stomach-churning. What most practitioners actually use.",
+    "kelly_quarter": "Quarter Kelly: the cautious choice, for when you are not confident your edge estimate is right.",
+    "wf_color": "IS is the period the strategy was tuned on; OOS is later history it never saw. Green OOS means the edge held up on unseen data. Red OOS means it fell apart — a warning that you fitted noise.",
+    "corr_under": "Add real assets (SPY, TLT, GLD…) to check whether your strategy is doing something original or just quietly tracking the stock market.",
+    "guide": "Plain-English explanations of every strategy and every piece of jargon in this app.",
 }
 
 PARAM_HELP = {
-    "fast": "Fast (short) moving-average span in trading days — reacts quickly.",
-    "slow": "Slow (long) moving-average span in trading days — the trend baseline.",
-    "lookback": "Number of trading days the rule looks back over.",
-    "skip": "Most-recent trading days to skip (controls short-term reversal).",
-    "smooth": "Smoothing window (trading days) applied to the raw signal.",
-    "speed": "Scales all Guppy ribbon spans up/down together.",
+    "fast": "The quick-reacting average, in trading days. Smaller = twitchier, trades more.",
+    "slow": "The slow-moving baseline average, in trading days. Bigger = steadier, trades less.",
+    "lookback": "How far back the rule looks, in trading days.",
+    "skip": "How many of the most recent days to ignore. Very recent moves often reverse, so skipping them can help.",
+    "smooth": "Averages the signal over this many days so it does not flip on a single odd day.",
+    "speed": "Stretches or squashes all the Guppy averages together. Higher = slower, longer-term.",
+    "entry_lb": "How many bars back to look for the high/low that triggers an entry. 20 is the classic Turtle 'System 1', 55 is 'System 2'.",
+    "exit_lb": "How many bars back to look for the opposite high/low that closes the trade. Shorter than the entry window, so you exit faster than you enter.",
+    "atr_period": "How many bars are used to measure the market's typical daily range ('N' in the Turtle rules).",
+    "add_atr": "How far the price must move in your favour before adding another unit. 0.5 means half a typical day's range.",
+    "stop_atr": "How far the price can move against your last entry before the whole position is closed. The Turtles used 2.",
+    "max_units": "The most units you will ever pyramid into one trade. The Turtles capped it at 4.",
+    "pre": "How many trading days before month end to be invested.",
+    "post": "How many trading days after month start to be invested.",
 }
 
 
@@ -88,8 +103,59 @@ def label_to_key(label):
     raise KeyError(label)
 
 
+@contextmanager
+def tab_guard(name):
+    """Render a tab's failure *inside that tab* instead of halting the script.
+
+    Streamlit runs the whole script top-to-bottom, so an uncaught exception in
+    one ``with tabs[i]:`` block leaves every later tab blank. Guarding each tab
+    means one broken panel costs one panel.
+    """
+    try:
+        yield
+    except Exception as e:  # noqa: BLE001 — deliberate catch-all per tab
+        st.error(f"**{name}** failed to render — {type(e).__name__}: {e}")
+        st.exception(e)
+
+
+@st.cache_data(show_spinner=False)
+def build_version():
+    """Short git SHA of the running code, so a stale deploy is visible at a glance."""
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=Path(__file__).parent, capture_output=True, text=True, timeout=5,
+        ).stdout.strip()
+        if sha:
+            return sha
+    except Exception:
+        pass
+    # Streamlit Cloud checks out without .git in some setups — fall back to a file.
+    vf = Path(__file__).parent / "VERSION"
+    return vf.read_text(encoding="utf-8").strip() if vf.exists() else "unknown"
+
+
+def version_footer():
+    """Muted sidebar line: code version + key library versions.
+
+    Makes 'is the deploy stale?' answerable at a glance rather than by inference.
+    """
+    st.sidebar.markdown(
+        f"<div style='color:{THEME.muted}; font-size:0.7rem; letter-spacing:0.06em; "
+        f"margin-top:1.5rem; border-top:1px solid {THEME.border}; padding-top:0.5rem'>"
+        f"build {build_version()}<br>streamlit {st.__version__} · pandas {pd.__version__}"
+        f"</div>", unsafe_allow_html=True)
+
+
 def render_param_controls(cls, prefix):
     values = {}
+    if cls.plain:
+        # Put the plain-English explanation where the user already is, rather
+        # than making them hunt for the guide.
+        st.markdown(f"*{cls.plain}*")
+        if cls.analogy:
+            st.caption(f"**Think of it like:** {cls.analogy}")
+        st.markdown("---")
     for name, (default, lo, hi, step) in cls.params.items():
         is_int = isinstance(default, int) and isinstance(step, int)
         key = f"{prefix}_{cls.key}_{name}"
@@ -182,8 +248,8 @@ def sidebar():
 
     sb("Timeframe", 2)
     c1, c2 = st.sidebar.columns(2)
-    cfg["start"] = c1.text_input("Start", "2015-01-01")
-    cfg["end"] = c2.text_input("End", "")
+    cfg["start"] = c1.text_input("Start", "2015-01-01", key="rnd_start")
+    cfg["end"] = c2.text_input("End", "", key="rnd_end")
     cfg["tf"] = st.sidebar.selectbox("Bar frequency", list(TIMEFRAMES), index=0,
                                      help=HELP["timeframe"])
 
@@ -332,6 +398,100 @@ def main():
         run_etf_lab()
     else:
         run_rnd()
+    version_footer()
+
+
+GLOSSARY = [
+    ("Sharpe ratio",
+     "How much return you got for how bumpy the ride was. Higher is better; above 1 is good, above 2 is rare and usually too good to be true.",
+     "Annualized mean return divided by annualized standard deviation of returns."),
+    ("Drawdown",
+     "How far below its best-ever value the account has fallen. A 30% drawdown means you are down 30% from the high-water mark and need +43% just to get back.",
+     "Measured peak-to-trough on the equity curve; 'Max DD' is the worst one in the period."),
+    ("Volatility",
+     "How much the price jumps around. High volatility is not the same as losing money — it just means a wilder ride.",
+     "Annualized standard deviation of returns."),
+    ("Beta",
+     "How much the strategy moves when the market moves. Beta 1 means it follows the market one-for-one; beta 0 means it does its own thing.",
+     "Slope of a regression of strategy returns on the underlying's returns."),
+    ("Correlation",
+     "Whether two things tend to move together. +1 means identical, 0 means unrelated, -1 means opposite. Holding uncorrelated strategies is the closest thing to a free lunch in investing.",
+     "Pearson correlation of the two return series."),
+    ("Skew",
+     "The shape of your wins and losses. Positive skew = lots of small losses and a few huge wins (trend-following). Negative skew = lots of small wins and the occasional disaster (selling insurance).",
+     "Third standardized moment of the return distribution."),
+    ("Volatility targeting",
+     "Automatically trading smaller when a market gets wild and bigger when it calms down, so your risk stays roughly constant instead of swinging with the market.",
+     "Position size scales as (target vol) / (estimated vol) — Carver's core sizing rule."),
+    ("Kelly criterion",
+     "The mathematically optimal bet size for growing money fastest. It is also extremely aggressive — most people use half or a quarter of it, because full Kelly can halve your account and still be 'correct'.",
+     "f* = mean/variance for continuous returns; f* = p − (1−p)/b for discrete bets."),
+    ("In-sample vs out-of-sample",
+     "In-sample is the history you tuned the strategy on — of course it looks good there. Out-of-sample is history it has never seen. Only the second one is evidence.",
+     "Walk-forward splits history into sequential IS/OOS windows and compares Sharpe."),
+    ("Overfitting",
+     "Finding a pattern that fits the past perfectly but is really just noise. The single biggest danger in this whole app. Defences: sweep a range of settings and look for a broad plateau rather than one lucky spike; check out-of-sample; run Monte Carlo.",
+     "Combat with the Spectrum, Diagnostics and Monte Carlo tabs."),
+    ("Monte Carlo",
+     "Reshuffling your actual results thousands of times to ask 'how much of this was luck?'. A wide spread of outcomes means the single history you got was not very informative.",
+     "Block bootstrap of the realized return series, preserving short-term autocorrelation."),
+    ("Basis point (bp)",
+     "One hundredth of a percent. 10 bps = 0.10%. Used for trading costs, which sound tiny but compound brutally on a strategy that trades every day.",
+     "1 bp = 0.01% of traded notional."),
+]
+
+
+def render_strategy_guide():
+    """Plain-English card per registered rule, plus a glossary.
+
+    Driven off REGISTRY, so a new strategy documents itself here automatically.
+    """
+    st.markdown(section("What these strategies actually do", 0), unsafe_allow_html=True)
+    st.caption("Every rule in the sidebar, explained without jargon. "
+               "Each one is a different theory about why prices move — none of them "
+               "is always right, which is exactly why you test them.")
+
+    for key in sorted(REGISTRY):
+        cls = REGISTRY[key]
+        x = cls.explain()
+        tag = " · needs several tickers" if cls.cross_sectional else ""
+        with st.expander(f"{x['label']}{tag}", expanded=False):
+            st.markdown(f"**{x['plain']}**")
+            if x["analogy"]:
+                st.markdown(f"🧠 **Think of it like:** {x['analogy']}")
+            if x["how_it_works"]:
+                st.markdown("**How it works, step by step:**")
+                for i, step in enumerate(x["how_it_works"], 1):
+                    st.markdown(f"{i}. {step}")
+            c1, c2 = st.columns(2)
+            if x["works_when"]:
+                c1.success(f"**Works when:** {x['works_when']}")
+            if x["fails_when"]:
+                c2.error(f"**Fails when:** {x['fails_when']}")
+            if x["evidence"]:
+                st.markdown(f"📚 **Where this comes from:** {x['evidence']}")
+
+    st.markdown(section("Glossary", 1), unsafe_allow_html=True)
+    st.caption("The words the rest of the app uses, in plain English.")
+    for term, plain, technical in GLOSSARY:
+        with st.expander(term, expanded=False):
+            st.markdown(plain)
+            st.caption(f"Technically: {technical}")
+
+    st.markdown(section("Things that sound good but did not survive testing", 2),
+                unsafe_allow_html=True)
+    st.markdown(
+        "**Volatility-managed portfolios** — the idea that you should cut exposure "
+        "whenever volatility spikes and add it back when markets calm down. "
+        "[Moreira & Muir (2017)](https://onlinelibrary.wiley.com/doi/abs/10.1111/jofi.12513) "
+        "found large gains from this. It is deliberately *not* a rule in this app, for "
+        "three reasons: later work found the gains "
+        "[are not achievable out of sample](https://www.sciencedirect.com/science/article/abs/pii/S0304405X2030132X), "
+        "trading costs erode them for every factor except the broad market, and a "
+        "replication across 103 strategies found no systematic Sharpe improvement. "
+        "On top of that, Parallax's volatility-targeted sizing already does most of "
+        "what it does. Left here as a reminder that a famous paper is not the same as "
+        "a usable edge.")
 
 
 def render_return_distribution(returns_by_label, native_tf, key):
@@ -358,7 +518,7 @@ def render_return_distribution(returns_by_label, native_tf, key):
     cc[3].metric("Std", f"{summ['std']*100:.2f}%")
     fig = returns_dist.distribution_figure(r, summ, THEME,
                                            title=f"{pick} — {eff} returns")
-    st.plotly_chart(style_fig(fig, height=360), use_container_width=True)
+    st.plotly_chart(style_fig(fig, height=360), width="stretch")
 
 
 def render_underlying_correlation(strategy_returns, instrument, tf, start, end, key,
@@ -388,14 +548,14 @@ def render_underlying_correlation(strategy_returns, instrument, tf, start, end, 
         return
     ctab, cheat = st.columns([1, 1])
     ctab.dataframe(panel.style.format({"Correlation": "{:+.2f}", "Beta": "{:+.2f}",
-                                       "Obs": "{:.0f}"}), use_container_width=True)
+                                       "Obs": "{:.0f}"}), width="stretch")
     hm = go.Figure(go.Heatmap(
         z=[panel["Correlation"].values], x=list(panel.index), y=["strategy"],
         colorscale="RdBu", zmid=0, zmin=-1, zmax=1,
         text=[np.round(panel["Correlation"].values, 2)], texttemplate="%{text}",
         colorbar=dict(title="r")))
     hm.update_layout(title="CORRELATION TO UNDERLYINGS")
-    cheat.plotly_chart(style_fig(hm, height=240), use_container_width=True)
+    cheat.plotly_chart(style_fig(hm, height=240), width="stretch")
 
 
 def run_rnd():
@@ -409,7 +569,7 @@ def run_rnd():
         return
 
     keys = [label_to_key(lbl) for lbl in cfg["selected"]]
-    instrument = st.selectbox("Instrument", list(data))
+    instrument = st.selectbox("Instrument", list(data), key="rnd_instrument")
     INSTRUMENT_HOLDER["name"] = instrument
     ohlcv = data[instrument]
     bt, risk, tf = cfg["bt"], cfg["risk"], cfg["tf"]
@@ -422,10 +582,11 @@ def run_rnd():
 
     bench_ret = ohlcv["close"].pct_change().fillna(0.0)
 
-    tabs = st.tabs(["BACKTEST", "SPECTRUM", "DRAWDOWN", "MONTE CARLO", "KELLY", "DIAGNOSTICS"])
+    tabs = st.tabs(["BACKTEST", "SPECTRUM", "DRAWDOWN", "MONTE CARLO", "KELLY",
+                    "DIAGNOSTICS", "STRATEGY GUIDE"])
 
     # --- BACKTEST ----------------------------------------------------------
-    with tabs[0]:
+    with tabs[0], tab_guard("BACKTEST"):
         results = {REGISTRY[k].label: run_one(k) for k in keys}
         log_eq = st.checkbox("Log scale", False, key="log_eq", help=HELP["logscale"])
         fig = go.Figure()
@@ -435,7 +596,7 @@ def run_rnd():
         fig.add_trace(go.Scatter(x=bench_eq.index, y=bench_eq, mode="lines",
             name=f"Buy&Hold {instrument}", line=dict(color=THEME.muted, dash="dot")))
         fig.update_layout(title=f"EQUITY CURVE — {instrument}")
-        st.plotly_chart(style_fig(fig, log_y=log_eq), use_container_width=True)
+        st.plotly_chart(style_fig(fig, log_y=log_eq), width="stretch")
 
         # --- Return summary (ROI / total profit / final equity) -------------
         st.markdown(section("Return summary", 4), unsafe_allow_html=True)
@@ -457,7 +618,7 @@ def run_rnd():
         st.dataframe(summ.style.format({
             "Final equity": "${:,.0f}", "Total return %": "{:.1f}%", "Profit $": "${:,.0f}",
             "CAGR %": "{:.1f}%", "Sharpe": "{:.2f}", "Max DD %": "{:.1f}%",
-            "vs Buy&Hold %": "{:+.1f}%"}), use_container_width=True)
+            "vs Buy&Hold %": "{:+.1f}%"}), width="stretch")
         # Headline cards for the best strategy by final equity
         best_lbl = summ["Final equity"].idxmax()
         best = summ.loc[best_lbl]
@@ -468,7 +629,7 @@ def run_rnd():
         cc[3].metric("vs Buy & Hold", f"{best['vs Buy&Hold %']:+.1f}%")
 
         st.markdown(section("Signals & indicators", 1), unsafe_allow_html=True)
-        sig_label = st.selectbox("Strategy to inspect", list(results))
+        sig_label = st.selectbox("Strategy to inspect", list(results), key="rnd_sig_pick")
         sig_res, sig_strat = results[sig_label]
         ledger = extract_trades(sig_res.position, ohlcv["close"])
         log_px = st.checkbox("Log scale", False, key="log_px", help=HELP["logscale"])
@@ -480,21 +641,21 @@ def run_rnd():
                 line=dict(width=1, color=THEME.series[(i + 1) % len(THEME.series)]), opacity=0.85))
         add_trade_markers(pfig, ohlcv["close"], ledger)
         pfig.update_layout(title=f"{instrument} — price, indicators & entries/exits ({sig_label})")
-        st.plotly_chart(style_fig(pfig, height=480, log_y=log_px), use_container_width=True)
+        st.plotly_chart(style_fig(pfig, height=480, log_y=log_px), width="stretch")
 
         st.markdown(section("Trade details", 2), unsafe_allow_html=True)
         if ledger.empty:
             st.info("No trades for this strategy/period.")
         else:
             st.caption("Each row is one round-trip; markers on the chart above match these rows.")
-            st.dataframe(ledger, use_container_width=True, height=260)
+            st.dataframe(ledger, width="stretch", height=260)
             st.download_button("Export trades CSV", ledger.to_csv(index=False),
                                file_name=f"trades_{instrument}_{sig_label}.csv")
 
         st.markdown(section("Metrics", 3), unsafe_allow_html=True)
         table = pd.DataFrame({lbl: r.stats for lbl, (r, _) in results.items()}).T
         table["FinalEquity"] = [r.equity.iloc[-1] for (r, _) in results.values()]
-        st.dataframe(table.style.format("{:.3f}"), use_container_width=True)
+        st.dataframe(table.style.format("{:.3f}"), width="stretch")
 
         # --- interval-return distribution + skew (per strategy) -------------
         render_return_distribution(
@@ -514,10 +675,11 @@ def run_rnd():
                                       seed_state_key="synth_seed")
 
     # --- SPECTRUM (+ beta/correlation) -------------------------------------
-    with tabs[1]:
+    with tabs[1], tab_guard("SPECTRUM"):
         st.markdown(section("Parameter sweep", 0), unsafe_allow_html=True)
         st.caption(HELP["sweep"])
-        spec_key = st.selectbox("Strategy", keys, format_func=lambda k: REGISTRY[k].label)
+        spec_key = st.selectbox("Strategy", keys, format_func=lambda k: REGISTRY[k].label,
+                                key="spec_strategy")
         cls = REGISTRY[spec_key]
         if cls.cross_sectional:
             st.warning("Spectrum view supports single-instrument rules for now.")
@@ -525,14 +687,14 @@ def run_rnd():
             base = scale_params_for_tf(cfg["params"].get(spec_key, {}), tf)
             sweep_params = st.multiselect("Parameter(s) to sweep (pick 1 or 2)",
                 list(cls.params), default=[cls.spectrum_param],
-                help="One = bar chart; two = Sharpe heatmap.")
+                help="One = bar chart; two = Sharpe heatmap.", key="spec_sweep_params")
             if len(sweep_params) == 1:
                 p = sweep_params[0]
                 d, lo, hi, _ = cls.params[p]
                 c1, c2, c3 = st.columns(3)
-                v_lo = c1.number_input(f"{p} min", value=float(lo))
-                v_hi = c2.number_input(f"{p} max", value=float(hi))
-                n = c3.number_input("Variants", 4, 30, 12)
+                v_lo = c1.number_input(f"{p} min", value=float(lo), key="spec_lo")
+                v_hi = c2.number_input(f"{p} max", value=float(hi), key="spec_hi")
+                n = c3.number_input("Variants", 4, 30, 12, key="spec_variants")
                 vals = make_spectrum(v_lo, v_hi, int(n), integer=isinstance(d, int))
                 fixed = {k: v for k, v in base.items() if k != p}
                 res_map, tbl = run_spectrum(cls, ohlcv, param=p, values=vals, bt=bt,
@@ -542,16 +704,16 @@ def run_rnd():
                     f.add_trace(go.Scatter(x=res.equity.index, y=res.equity, mode="lines",
                                            name=lbl, opacity=0.85))
                 f.update_layout(title=f"SPECTRUM EQUITY — {cls.label} (sweep {p})")
-                st.plotly_chart(style_fig(f), use_container_width=True)
+                st.plotly_chart(style_fig(f), width="stretch")
                 bar = go.Figure(go.Bar(x=tbl.index.astype(str), y=tbl["Sharpe"], marker_color=THEME.teal))
                 bar.update_layout(title=f"SHARPE vs {p}")
-                st.plotly_chart(style_fig(bar, height=320), use_container_width=True)
-                st.dataframe(tbl.style.format("{:.3f}"), use_container_width=True)
+                st.plotly_chart(style_fig(bar, height=320), width="stretch")
+                st.dataframe(tbl.style.format("{:.3f}"), width="stretch")
             elif len(sweep_params) == 2:
                 px, py = sweep_params[:2]
                 dx, lox, hix, _ = cls.params[px]
                 dy, loy, hiy, _ = cls.params[py]
-                n = st.number_input("Grid size (per axis)", 4, 16, 8)
+                n = st.number_input("Grid size (per axis)", 4, 16, 8, key="spec_grid")
                 vx = make_spectrum(float(lox), float(hix), int(n), integer=isinstance(dx, int))
                 vy = make_spectrum(float(loy), float(hiy), int(n), integer=isinstance(dy, int))
                 fixed = {k: v for k, v in base.items() if k not in (px, py)}
@@ -560,7 +722,7 @@ def run_rnd():
                     x=[str(c) for c in grid.columns], y=[str(i) for i in grid.index],
                     colorscale="Viridis", colorbar=dict(title="Sharpe")))
                 hm.update_layout(title=f"SHARPE HEATMAP — {px} (x) vs {py} (y)", xaxis_title=px, yaxis_title=py)
-                st.plotly_chart(style_fig(hm, height=480), use_container_width=True)
+                st.plotly_chart(style_fig(hm, height=480), width="stretch")
             else:
                 st.info("Select one or two parameters to sweep.")
 
@@ -575,10 +737,10 @@ def run_rnd():
             rows.append({"Strategy": REGISTRY[k].label, "Beta": bc["beta"], "Correlation": bc["correlation"]})
         if rows:
             st.dataframe(pd.DataFrame(rows).set_index("Strategy").style.format("{:.3f}"),
-                         use_container_width=True)
+                         width="stretch")
 
     # --- DRAWDOWN ----------------------------------------------------------
-    with tabs[2]:
+    with tabs[2], tab_guard("DRAWDOWN"):
         st.markdown(section("Drawdown history", 0), unsafe_allow_html=True)
         st.caption(HELP["drawdown"])
         ddfig = go.Figure()
@@ -590,7 +752,7 @@ def run_rnd():
         ddfig.add_trace(go.Scatter(x=bench_dd.index, y=bench_dd * 100, mode="lines",
             name=f"Buy&Hold {instrument}", line=dict(color=THEME.muted, dash="dot")))
         ddfig.update_layout(title="DRAWDOWN (%) vs UNDERLYING", yaxis_title="Drawdown %")
-        st.plotly_chart(style_fig(ddfig), use_container_width=True)
+        st.plotly_chart(style_fig(ddfig), width="stretch")
 
         st.markdown(section("Risk & capture stats", 1), unsafe_allow_html=True)
         st.caption(HELP["capture"])
@@ -608,7 +770,7 @@ def run_rnd():
                 "Downside capture %": metrics.downside_capture(res.returns, bench_ret),
             })
         st.dataframe(pd.DataFrame(rows).set_index("Strategy").style.format("{:.2f}"),
-                     use_container_width=True)
+                     width="stretch")
 
         st.markdown(section("Spectrum drawdown", 2), unsafe_allow_html=True)
         sk = st.selectbox("Strategy", [k for k in keys if not REGISTRY[k].cross_sectional] or keys,
@@ -622,10 +784,10 @@ def run_rnd():
             _, tbl = run_spectrum(cls, ohlcv, param=p, values=vals, bt=bt, risk=risk, fixed_params=base)
             bar = go.Figure(go.Bar(x=tbl.index.astype(str), y=tbl["MaxDD"] * 100, marker_color=THEME.coral))
             bar.update_layout(title=f"MAX DRAWDOWN (%) vs {p}", yaxis_title="MaxDD %")
-            st.plotly_chart(style_fig(bar, height=340), use_container_width=True)
+            st.plotly_chart(style_fig(bar, height=340), width="stretch")
 
     # --- MONTE CARLO -------------------------------------------------------
-    with tabs[3]:
+    with tabs[3], tab_guard("MONTE CARLO"):
         st.markdown(section("Monte Carlo simulation", 0), unsafe_allow_html=True)
         st.caption(HELP["montecarlo"])
         with st.expander("How does this work? (methodology)"):
@@ -644,10 +806,10 @@ def run_rnd():
         mk = st.selectbox("Strategy", [k for k in keys if not REGISTRY[k].cross_sectional] or keys,
                           format_func=lambda k: REGISTRY[k].label, key="mc")
         c1, c2, c3 = st.columns(3)
-        n_sims = int(c1.number_input("Simulations", 50, 3000, 400, 50))
-        block = int(c2.number_input("Block size (bars)", 1, 120, 20, 1,
+        n_sims = int(c1.number_input("Simulations", 50, 3000, 400, 50, key="mc_sims"))
+        block = int(c2.number_input("Block size (bars)", 1, 120, 20, 1, key="mc_block",
                     help="Length of contiguous return blocks resampled (preserves short-term autocorrelation)."))
-        show_paths = c3.number_input("Paths to draw", 0, 500, 120, 10,
+        show_paths = c3.number_input("Paths to draw", 0, 500, 120, 10, key="mc_paths",
                     help="How many simulated equity curves to overlay (visual only).")
         if not REGISTRY[mk].cross_sectional:
             res = run_one(mk)[0]
@@ -663,13 +825,13 @@ def run_rnd():
                 pf.add_trace(go.Scatter(y=res.equity.reset_index(drop=True), mode="lines",
                     name="actual", line=dict(width=2.5, color=THEME.coral)))
                 pf.update_layout(title=f"MONTE CARLO EQUITY PATHS ({n_sims} sims)")
-                st.plotly_chart(style_fig(pf, height=460), use_container_width=True)
+                st.plotly_chart(style_fig(pf, height=460), width="stretch")
 
                 boot = montecarlo.bootstrap(res.returns, n_sims=n_sims, block=block)
                 hist = go.Figure(go.Histogram(x=boot["Sharpe"], nbinsx=40, marker_color=THEME.teal))
                 hist.add_vline(x=res.stats["Sharpe"], line_color=THEME.coral, annotation_text="actual")
                 hist.update_layout(title="BOOTSTRAP SHARPE DISTRIBUTION")
-                st.plotly_chart(style_fig(hist, height=320), use_container_width=True)
+                st.plotly_chart(style_fig(hist, height=320), width="stretch")
                 summ = montecarlo.summarize(boot)
                 st.caption("Each metric shows **p5 / p50 / p95** across all simulations "
                            "— pessimistic / median / optimistic.")
@@ -682,7 +844,7 @@ def run_rnd():
                 st.info("Not enough data for Monte Carlo on this selection.")
 
     # --- KELLY -------------------------------------------------------------
-    with tabs[4]:
+    with tabs[4], tab_guard("KELLY"):
         st.markdown(section("Kelly position sizer", 0), unsafe_allow_html=True)
         st.caption(HELP["kelly"])
         kk = st.selectbox("Strategy", [k for k in keys if not REGISTRY[k].cross_sectional] or keys,
@@ -701,22 +863,22 @@ def run_rnd():
 
         st.markdown(section("Manual Kelly calculator", 1), unsafe_allow_html=True)
         c1, c2 = st.columns(2)
-        wp = c1.slider("Win probability", 0.0, 1.0, 0.55, 0.01)
-        wl = c2.number_input("Win/loss payoff ratio", 0.1, 10.0, 1.5, 0.1,
+        wp = c1.slider("Win probability", 0.0, 1.0, 0.55, 0.01, key="kelly_wp")
+        wl = c2.number_input("Win/loss payoff ratio", 0.1, 10.0, 1.5, 0.1, key="kelly_wl",
                              help="Average win size ÷ average loss size.")
         f = kelly.kelly_discrete(wp, wl)
         st.metric("Kelly fraction", f"{f*100:.1f}% of capital",
                   help="f* = p − (1−p)/b. Negative edges return 0%.")
 
     # --- DIAGNOSTICS -------------------------------------------------------
-    with tabs[5]:
+    with tabs[5], tab_guard("DIAGNOSTICS"):
         st.markdown(section("Return correlation", 0), unsafe_allow_html=True)
         st.caption(HELP["corr"])
         chosen = st.multiselect("Strategies to compare", [REGISTRY[k].label for k in keys],
-                                default=[REGISTRY[k].label for k in keys])
+                                default=[REGISTRY[k].label for k in keys], key="diag_strats")
         underlyings = st.multiselect("Add underlyings (real tickers)",
                                      ["SPY", "QQQ", "IWM", "TLT", "GLD", "HYG", "UUP", "USO"],
-                                     default=[], help=HELP["corr_under"])
+                                     default=[], help=HELP["corr_under"], key="diag_under")
         ck = [label_to_key(l) for l in chosen if not REGISTRY[label_to_key(l)].cross_sectional]
         series = {REGISTRY[k].label: run_one(k)[0].returns for k in ck}
         # Always include the current instrument as a baseline so a correlation
@@ -746,7 +908,7 @@ def run_rnd():
                 text=np.round(corr.values, 2), texttemplate="%{text}",
                 colorbar=dict(title="r")))
             hm.update_layout(title="RETURN CORRELATION")
-            st.plotly_chart(style_fig(hm), use_container_width=True)
+            st.plotly_chart(style_fig(hm), width="stretch")
         else:
             st.info("Activate at least one strategy to see its correlation to the underlying.")
 
@@ -757,7 +919,7 @@ def run_rnd():
         if wf_keys:
             cwf1, cwf2 = st.columns(2)
             wf_key = cwf1.selectbox("Rule", wf_keys, format_func=lambda k: REGISTRY[k].label, key="wf")
-            n_splits = int(cwf2.number_input("OOS windows (splits)", 2, 10, 4, 1,
+            n_splits = int(cwf2.number_input("OOS windows (splits)", 2, 10, 4, 1, key="wf_splits",
                            help="How many sequential out-of-sample windows to test."))
             strat = make_strategy(REGISTRY[wf_key], cfg["params"].get(wf_key, {}), tf)
             wf = walk_forward(strat, ohlcv, n_splits=n_splits, bt=bt, risk=risk)
@@ -775,17 +937,21 @@ def run_rnd():
                 styler = (wf.style
                           .format({"IS_Sharpe": "{:.2f}", "OOS_Sharpe": "{:.2f}"})
                           .apply(_oos_row, axis=1))
-                st.dataframe(styler, use_container_width=True)
+                st.dataframe(styler, width="stretch")
+
+    # --- STRATEGY GUIDE ----------------------------------------------------
+    with tabs[6], tab_guard("STRATEGY GUIDE"):
+        render_strategy_guide()
 
 
 ACCUM_HELP = {
-    "lab": "Test long-term accumulation: a buy rule deploys cash on triggers (dips, VIX, RSI, MA touch, regression bands…) and is compared to fixed DCA and lump-sum buy & hold on the SAME contributions.",
-    "initial": "Cash available at the start (your dry powder).",
-    "contribution": "New cash added every cadence period (your ongoing savings).",
-    "cadence": "How often you add the contribution and (for DCA) invest it.",
-    "deploy": "Fraction of available cash deployed each time the buy rule fires (1.0 = go all-in on a signal).",
-    "sell": "Fraction of holdings sold each time the (optional) sell rule fires.",
-    "stats": "Beta/alpha/correlation are vs the underlying's own returns. Alpha = annualized excess return after removing beta·market.",
+    "lab": "Answers a real-life question: if you save money every month, is it better to buy on a fixed schedule, or to hold cash back and buy the dips? Your dip-buying rule is compared against boring fixed investing and against putting it all in at the start — using exactly the same money either way, so the comparison is fair.",
+    "initial": "Money you have available on day one (your starting 'dry powder').",
+    "contribution": "New money you add every period — your regular savings out of income.",
+    "cadence": "How often you add that money, and how often the fixed-schedule comparison invests it.",
+    "deploy": "How much of your waiting cash to spend each time your buy signal fires. 1.0 means spend all of it at once.",
+    "sell": "How much of your holdings to sell each time the (optional) sell signal fires.",
+    "stats": "Compares you to just owning the asset. Beta is how much you move with it, correlation is how tightly you track it, and alpha is the extra return you earned that owning it cannot explain.",
 }
 
 
@@ -904,7 +1070,7 @@ def run_accum_lab():
     t_eq, t_sig, t_dd, t_stats, t_reg = st.tabs(
         ["EQUITY", "SIGNALS", "DRAWDOWN", "STATS", "REGRESSION"])
 
-    with t_eq:
+    with t_eq, tab_guard("EQUITY"):
         log_y = st.checkbox("Log scale", True, key="acc_log", help=HELP["logscale"])
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=res.equity.index, y=res.equity, mode="lines",
@@ -926,7 +1092,7 @@ def run_accum_lab():
             yaxis2=dict(overlaying="y", side="right", showgrid=False,
                         title=f"{ticker} price ($)",
                         type="log" if log_y else "linear"))
-        st.plotly_chart(style_fig(fig, log_y=log_y), use_container_width=True)
+        st.plotly_chart(style_fig(fig, log_y=log_y), width="stretch")
 
         # Dedicated P/L curve: profit = equity − money contributed. Flat at $0
         # until the first buy deploys capital, so the dry-powder phase is obvious.
@@ -941,7 +1107,7 @@ def run_accum_lab():
                                        mode="lines", name=f"{name} P/L", line=dict(dash="dot")))
         plfig.add_hline(y=0, line=dict(color=THEME.muted, width=1))
         plfig.update_layout(title=f"{ticker} — profit / loss ($)", yaxis_title="P/L $")
-        st.plotly_chart(style_fig(plfig, height=320), use_container_width=True)
+        st.plotly_chart(style_fig(plfig, height=320), width="stretch")
 
         c = st.columns(3)
         c[0].metric("Final equity", f"${res.stats['FinalEquity']:,.0f}")
@@ -954,7 +1120,7 @@ def run_accum_lab():
         c2[2].metric("Return on deployed", f"{res.stats['ReturnOnDeployed%']:.1f}%",
                      help="Return on capital actually put to work (excludes idle cash).")
 
-    with t_sig:
+    with t_sig, tab_guard("SIGNALS"):
         st.caption("Price with buy/sell signals, plus the indicator driving the "
                    "selected rule (e.g. RSI, VIX, drawdown) and its threshold.")
         log_s = st.checkbox("Log scale", True, key="acc_sig_log", help=HELP["logscale"])
@@ -985,7 +1151,7 @@ def run_accum_lab():
                 mode="markers", name=f"Sell ({n_sell})", marker=dict(symbol="triangle-down", size=9,
                 color=THEME.coral, line=dict(width=1, color="#fff"))))
         pricefig.update_layout(title=f"{ticker} — buy/sell signals")
-        st.plotly_chart(style_fig(pricefig, height=380, log_y=log_s), use_container_width=True)
+        st.plotly_chart(style_fig(pricefig, height=380, log_y=log_s), width="stretch")
         # indicator sub-panel (RSI/VIX/drawdown/slope/...) for the active buy rule.
         # Guarded: a single misbehaving rule must never blank the whole tab.
         try:
@@ -1001,12 +1167,12 @@ def run_accum_lab():
                 ifig.add_hline(y=val, line=dict(color=THEME.coral, dash="dot"),
                                annotation_text=lab, annotation_position="right")
             ifig.update_layout(title=f"Indicator — {ilabel}")
-            st.plotly_chart(style_fig(ifig, height=260), use_container_width=True)
+            st.plotly_chart(style_fig(ifig, height=260), width="stretch")
         else:
             st.info("This buy rule is price-based (e.g. MA touch / regression) — see "
                     "the price chart above and the REGRESSION tab.")
 
-    with t_dd:
+    with t_dd, tab_guard("DRAWDOWN"):
         from ghost.backtest import metrics as M
         ddfig = go.Figure()
         ddfig.add_trace(go.Scatter(x=res.equity.index,
@@ -1017,9 +1183,9 @@ def run_accum_lab():
                                        y=M.drawdown_series(eq.pct_change().fillna(0)) * 100,
                                        mode="lines", name=name, line=dict(dash="dot")))
         ddfig.update_layout(title="DRAWDOWN (%)", yaxis_title="Drawdown %")
-        st.plotly_chart(style_fig(ddfig), use_container_width=True)
+        st.plotly_chart(style_fig(ddfig), width="stretch")
 
-    with t_stats:
+    with t_stats, tab_guard("STATS"):
         st.caption(ACCUM_HELP["stats"])
         rows = {buy_label: res.stats}
         from ghost.accumulation.engine import _accum_stats
@@ -1029,7 +1195,7 @@ def run_accum_lab():
         tbl = pd.DataFrame(rows).T[["FinalEquity", "Contributed", "Deployed", "Profit",
                                     "ReturnOnContributed%", "ReturnOnDeployed%",
                                     "AnnVol%", "MaxDD%", "Beta", "Alpha(ann)%", "Corr"]]
-        st.dataframe(tbl.style.format("{:.2f}"), use_container_width=True)
+        st.dataframe(tbl.style.format("{:.2f}"), width="stretch")
 
         # --- interval-return distribution + skew (accumulation equity) ------
         accum_ret = res.equity.pct_change().dropna()
@@ -1042,7 +1208,7 @@ def run_accum_lab():
             key="accum", profit_line=f"**{buy_label}** — final equity ${fe:,.0f}",
             synthetic=src_mode.startswith("Synth"), seed_state_key="acc_seed")
 
-    with t_reg:
+    with t_reg, tab_guard("REGRESSION"):
         st.caption("Linear/log regression channel with ±k·σ bands — buy near the "
                    "lower band, sell near the upper band.")
         c1, c2, c3 = st.columns(3)
@@ -1057,7 +1223,7 @@ def run_accum_lab():
         rfig.add_trace(go.Scatter(x=ch.index, y=ch["upper"], name="+kσ (sell)", line=dict(color=THEME.coral, dash="dot")))
         rfig.add_trace(go.Scatter(x=ch.index, y=ch["lower"], name="−kσ (buy)", line=dict(color=THEME.teal, dash="dot")))
         rfig.update_layout(title=f"{ticker} — {'log' if logfit else 'linear'} regression channel")
-        st.plotly_chart(style_fig(rfig, log_y=logfit), use_container_width=True)
+        st.plotly_chart(style_fig(rfig, log_y=logfit), width="stretch")
 
 
 # ----------------------------------------------------------------------------
@@ -1277,7 +1443,7 @@ def run_etf_lab():
         ["DESIGN", "BACKTEST", "COMPARE", "OVERLAP", "FUND ECONOMICS"])
 
     # --- DESIGN: current holdings + weights ------------------------------------
-    with t_design:
+    with t_design, tab_guard("DESIGN"):
         st.markdown(section("Current holdings (latest rebalance)", 0), unsafe_allow_html=True)
         latest = ws.iloc[-1]
         latest = latest[latest != 0].sort_values(key=abs, ascending=False)
@@ -1286,11 +1452,11 @@ def run_etf_lab():
         else:
             hold = pd.DataFrame({"Weight %": (latest * 100).round(2),
                                  "Side": np.where(latest > 0, "LONG", "SHORT")})
-            st.dataframe(hold, use_container_width=True, height=320)
+            st.dataframe(hold, width="stretch", height=320)
             wfig = go.Figure(go.Bar(x=latest.index.astype(str), y=latest.values * 100,
                 marker_color=np.where(latest > 0, THEME.teal, THEME.coral)))
             wfig.update_layout(title="HOLDING WEIGHTS (%)", yaxis_title="Weight %")
-            st.plotly_chart(style_fig(wfig, height=320), use_container_width=True)
+            st.plotly_chart(style_fig(wfig, height=320), width="stretch")
         st.caption(f"Universe loaded: {panel.shape[1]} tickers · {len(rebal_dts)} "
                    f"{spec.rebalance.lower()} rebalances · weighting: {spec.weighting}.")
 
@@ -1302,11 +1468,11 @@ def run_etf_lab():
             cols = ["sector", "industry", "trailing_pe", "forward_pe",
                     "fcf_per_share", "profit_margin", "dividend_yield", "market_cap"]
             cols = [c for c in cols if c in snap.columns]
-            st.dataframe(snap[cols], use_container_width=True)
+            st.dataframe(snap[cols], width="stretch")
             st.caption("Snapshot = today's values (no history). Illustrative only.")
 
     # --- BACKTEST --------------------------------------------------------------
-    with t_back:
+    with t_back, tab_guard("BACKTEST"):
         log_y = st.checkbox("Log scale", False, key="etf_log", help=HELP["logscale"])
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=res.equity.index, y=res.equity, mode="lines",
@@ -1317,7 +1483,7 @@ def run_etf_lab():
                 fig.add_trace(go.Scatter(x=beq.index, y=beq, mode="lines",
                               name=f"{b} (B&H)", line=dict(dash="dot")))
         fig.update_layout(title=f"EQUITY CURVE — {spec.name}")
-        st.plotly_chart(style_fig(fig, log_y=log_y), use_container_width=True)
+        st.plotly_chart(style_fig(fig, log_y=log_y), width="stretch")
 
         cc = st.columns(4)
         cc[0].metric("Final equity", f"${res.stats['FinalEquity']:,.0f}")
@@ -1339,14 +1505,14 @@ def run_etf_lab():
                 stackgroup=None, name=t,
                 line=dict(width=1, color=THEME.series[i % len(THEME.series)])))
         afig.update_layout(title="HOLDING WEIGHTS OVER TIME (%)", yaxis_title="Weight %")
-        st.plotly_chart(style_fig(afig, height=360), use_container_width=True)
+        st.plotly_chart(style_fig(afig, height=360), width="stretch")
 
         st.markdown(section("Drawdown", 2), unsafe_allow_html=True)
         dd = metrics.drawdown_series(res.returns) * 100
         ddf = go.Figure(go.Scatter(x=dd.index, y=dd, fill="tozeroy",
                         line=dict(color=THEME.coral)))
         ddf.update_layout(title="DRAWDOWN (%)", yaxis_title="Drawdown %")
-        st.plotly_chart(style_fig(ddf, height=300), use_container_width=True)
+        st.plotly_chart(style_fig(ddf, height=300), width="stretch")
 
         # --- interval-return distribution + skew (portfolio returns) --------
         render_return_distribution({spec.name: res.returns}, "Daily", key="etf")
@@ -1360,7 +1526,7 @@ def run_etf_lab():
             synthetic=False)
 
     # --- COMPARE ---------------------------------------------------------------
-    with t_cmp:
+    with t_cmp, tab_guard("COMPARE"):
         st.markdown(section("Fund vs benchmarks", 0), unsafe_allow_html=True)
         series = {spec.name: res.returns}
         for b in bench:
@@ -1379,7 +1545,7 @@ def run_etf_lab():
                 "Down capture %": metrics.downside_capture(r, bench_ret0),
             })
         st.dataframe(pd.DataFrame(rows).set_index("Fund").style.format("{:.2f}"),
-                     use_container_width=True)
+                     width="stretch")
 
         st.markdown(section("Return correlation", 1), unsafe_allow_html=True)
         corr = pd.DataFrame(series).dropna(how="all").corr()
@@ -1389,10 +1555,10 @@ def run_etf_lab():
                 zmid=0, zmin=-1, zmax=1, text=np.round(corr.values, 2),
                 texttemplate="%{text}", colorbar=dict(title="r")))
             hm.update_layout(title="RETURN CORRELATION")
-            st.plotly_chart(style_fig(hm), use_container_width=True)
+            st.plotly_chart(style_fig(hm), width="stretch")
 
     # --- OVERLAP ---------------------------------------------------------------
-    with t_overlap:
+    with t_overlap, tab_guard("OVERLAP"):
         st.markdown(section("Holdings overlap", 0), unsafe_allow_html=True)
         st.caption("Weighted overlap (Σ min weight) between your fund and each enabled "
                    "preset. Third-party ETF holdings aren't free, so this compares funds "
@@ -1400,7 +1566,7 @@ def run_etf_lab():
         my_w = {t: float(v) for t, v in ws.iloc[-1].items() if v != 0}
         st.markdown("**Your fund's current holdings**")
         st.dataframe(pd.Series({t: round(w * 100, 2) for t, w in my_w.items()},
-                     name="Weight %").to_frame(), use_container_width=True, height=240)
+                     name="Weight %").to_frame(), width="stretch", height=240)
         compare = st.checkbox("Compare overlap against the preset funds "
                               "(fetches their universes — may be slow)", False,
                               key="etf_overlap_go")
@@ -1426,12 +1592,12 @@ def run_etf_lab():
                 colorscale="Viridis", zmin=0, zmax=1, text=np.round(m.values.astype(float), 2),
                 texttemplate="%{text}"))
             hm.update_layout(title="WEIGHTED HOLDINGS OVERLAP")
-            st.plotly_chart(style_fig(hm, height=420), use_container_width=True)
+            st.plotly_chart(style_fig(hm, height=420), width="stretch")
         else:
             st.info("Need at least two funds to compare overlap.")
 
     # --- FUND ECONOMICS --------------------------------------------------------
-    with t_econ:
+    with t_econ, tab_guard("FUND ECONOMICS"):
         st.markdown(section("If you ran this fund…", 0), unsafe_allow_html=True)
         st.caption("Issuer economics — all figures are planning estimates.")
         c1, c2, c3 = st.columns(3)
@@ -1454,7 +1620,7 @@ def run_etf_lab():
         ec[1].metric(f"Cumulative net (yr {years})", f"${edf.loc[years,'CumNetProfit']:,.0f}")
         be = etf_econ.breakeven_aum(econ_cfg)
         ec[2].metric("Breakeven AUM", "∞" if be == float("inf") else f"${be:,.0f}")
-        st.dataframe(edf.style.format("${:,.0f}"), use_container_width=True)
+        st.dataframe(edf.style.format("${:,.0f}"), width="stretch")
         st.markdown(section("Investor fee drag", 1), unsafe_allow_html=True)
         drag = etf_econ.investor_fee_drag(max(res.stats["CAGR"], 0.0), er_pct, years)
         dc = st.columns(3)

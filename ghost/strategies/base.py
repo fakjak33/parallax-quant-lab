@@ -10,6 +10,11 @@ Each subclass declares:
   - ``label``: human-friendly name
   - ``params``: {name: (default, lo, hi, step)} drives the UI spectrum sliders
   - ``spectrum_param``: which param the spectrum tester sweeps by default
+
+Subclasses should also fill the *explainer* fields (``plain``, ``analogy``,
+``how_it_works``, ``works_when``, ``fails_when``, ``evidence``). These drive the
+Strategy Guide tab and the sidebar help, and are written for a reader with no
+finance background — plain words, no jargon, no equations.
 """
 
 from __future__ import annotations
@@ -28,6 +33,27 @@ class Strategy:
     params: dict = field(default_factory=dict)
     spectrum_param: str = ""
     cross_sectional: bool = False
+
+    # --- plain-English explainers (see module docstring) -------------------
+    plain: str = ""              # one sentence, no jargon
+    analogy: str = ""            # everyday comparison
+    how_it_works: tuple = ()     # 3-4 short steps
+    works_when: str = ""
+    fails_when: str = ""
+    evidence: str = ""           # source + link, markdown
+
+    @classmethod
+    def explain(cls) -> dict:
+        """Explainer fields as a plain dict — what the Strategy Guide renders."""
+        return {
+            "label": cls.label,
+            "plain": cls.plain,
+            "analogy": cls.analogy,
+            "how_it_works": list(cls.how_it_works),
+            "works_when": cls.works_when,
+            "fails_when": cls.fails_when,
+            "evidence": cls.evidence,
+        }
 
     def __init__(self, **kwargs):
         # Instance params start from class defaults, overridden by kwargs.

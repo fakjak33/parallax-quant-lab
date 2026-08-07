@@ -25,6 +25,37 @@ class TimeSeriesMomentum(Strategy):
     }
     spectrum_param = "lookback"
 
+    plain = (
+        "Looks at whether an asset went up or down over the last several months, and bets "
+        "the same direction continues."
+    )
+    analogy = (
+        "Like judging a football team by their record this season rather than their "
+        "reputation. Whoever has been winning is the one you back next week."
+    )
+    how_it_works = (
+        "Measure the total return over the lookback window - often about a year.",
+        "Divide by how jumpy the asset is, so 10% in a calm bond counts more than in a wild stock.",
+        "Positive past return means buy; negative means sell short.",
+        "Position size scales with how strong that risk-adjusted past move was.",
+    )
+    works_when = (
+        "Almost everywhere, historically - this is the single best-replicated effect in "
+        "the whole app, found across stocks, bonds, currencies and commodities over more "
+        "than a century."
+    )
+    fails_when = (
+        "Sharp reversals at turning points, and crisis periods specifically: research "
+        "finds the predictability trend-following relies on can weaken to roughly a third "
+        "of its normal strength when markets are in crisis."
+    )
+    evidence = (
+        "Moskowitz, Ooi & Pedersen (2012), the canonical time-series momentum paper. See "
+        "[Alpha Architect's review of the historical evidence]"
+        "(https://alphaarchitect.com/time-series-momentum-aka-trend-following-the-historical-evidence/) "
+        "for the century-plus replication and the caveats about shorter horizons."
+    )
+
     def raw_forecast(self, ohlcv: pd.DataFrame) -> pd.Series:
         close = ohlcv["close"]
         lb = int(self.values["lookback"])
