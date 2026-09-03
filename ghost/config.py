@@ -30,7 +30,10 @@ DEFAULT_CAPITAL = 1_000_000.0
 TIMEFRAME_DAYS = {"Daily": 1, "Weekly": 5, "Monthly": 21}
 # Strategy parameters expressed in (trading-day) time that should be rescaled
 # to bars when the timeframe changes.
-TIME_SCALED_PARAMS = {"fast", "slow", "lookback", "smooth", "skip"}
+TIME_SCALED_PARAMS = {"fast", "slow", "lookback", "smooth", "skip",
+                      "entry_lb", "exit_lb", "atr_period"}
+# Deliberately NOT scaled: "pre"/"post" (turn-of-month) are counts of *calendar*
+# positions, and "add_atr"/"stop_atr"/"max_units" are multiples, not durations.
 
 
 @dataclass

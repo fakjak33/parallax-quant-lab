@@ -25,6 +25,32 @@ class EMACrossover(Strategy):
     }
     spectrum_param = "fast"
 
+    plain = (
+        "Follows the trend. It compares a fast-reacting average price to a slow-moving "
+        "one: when the fast one is above the slow one the market is rising, so it buys."
+    )
+    analogy = (
+        "Like judging whether a hill goes up by comparing where you are standing to "
+        "where you were a mile back. Recent position versus longer-term position tells "
+        "you the slope."
+    )
+    how_it_works = (
+        "Keep two running averages of the price: one quick, one slow.",
+        "Subtract the slow one from the quick one - positive means rising.",
+        "Divide by how jumpy the price normally is, so calm and wild markets are comparable.",
+        "The bigger the gap, the bigger the position - it scales smoothly, it is not just on/off.",
+    )
+    works_when = "Markets move in sustained directions for weeks or months at a time."
+    fails_when = (
+        "Sideways, choppy markets. The two averages keep crossing back and forth and you "
+        "pay costs on every flip-flop without catching a real move."
+    )
+    evidence = (
+        "Robert Carver's EWMAC, the core building block of his systematic trading books, "
+        "and the industry-standard implementation of trend-following used by managed "
+        "futures funds."
+    )
+
     def raw_forecast(self, ohlcv: pd.DataFrame) -> pd.Series:
         close = ohlcv["close"]
         fast = int(self.values["fast"])

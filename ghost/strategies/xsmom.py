@@ -26,6 +26,34 @@ class CrossSectionalMomentum(Strategy):
     }
     spectrum_param = "lookback"
 
+    plain = (
+        "Compares all the assets in your list against each other, buys the ones that have "
+        "risen most and sells the ones that have risen least."
+    )
+    analogy = (
+        "Like a school sports day ranking. It does not matter how fast anyone ran in "
+        "absolute terms - only who finished ahead of whom."
+    )
+    how_it_works = (
+        "Measure each asset's return over the lookback window.",
+        "Deliberately skip the most recent few weeks, because very recent moves tend to reverse.",
+        "Rank everything against everything else and score it relative to the group average.",
+        "Go long the top of the ranking and short the bottom.",
+    )
+    works_when = (
+        "You give it several instruments to compare - it needs a field to rank. With one "
+        "ticker selected it has nothing to do."
+    )
+    fails_when = (
+        "'Momentum crashes' - sharp rebounds after a market bottom, when the beaten-down "
+        "losers you are short rocket upward."
+    )
+    evidence = (
+        "Jegadeesh & Titman (1993), one of the most cited findings in finance and the "
+        "origin of the momentum factor. Note it is a *relative* bet, so it can lose money "
+        "in a rising market if your longs rise less than your shorts."
+    )
+
     def raw_forecast(self, ohlcv: pd.DataFrame) -> pd.Series:  # pragma: no cover
         raise NotImplementedError("xsmom is cross-sectional; use forecast_panel.")
 

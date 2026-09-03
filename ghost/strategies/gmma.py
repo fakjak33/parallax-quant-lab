@@ -28,6 +28,34 @@ class GMMA(Strategy):
     }
     spectrum_param = "speed"
 
+    plain = (
+        "Uses two whole bundles of averages - a fast bundle representing short-term "
+        "traders and a slow bundle representing long-term investors - and buys when the "
+        "two groups clearly agree the market is rising."
+    )
+    analogy = (
+        "Like checking whether both the day-trippers and the season-ticket holders are "
+        "buying. When both crowds move the same way and the gap between them widens, "
+        "the move has broad agreement behind it."
+    )
+    how_it_works = (
+        "Build six fast averages (the traders) and six slow ones (the investors).",
+        "Average each bundle to get one line per group.",
+        "Measure the gap between the two lines, adjusted for how jumpy the price is.",
+        "A wide, positive gap means both crowds agree it is going up - buy strongly.",
+    )
+    works_when = "A trend has genuine breadth of participation, not just a one-day spike."
+    fails_when = (
+        "The bundles tangle together in a sideways market, producing a signal near zero "
+        "and a lot of small, pointless trades."
+    )
+    evidence = (
+        "Daryl Guppy's Multiple Moving Average, a practitioner technique. Weaker academic "
+        "support than trend or carry - treat it as a variation on trend-following rather "
+        "than an independent effect, and check its correlation to the EMA rule in the "
+        "Diagnostics tab before assuming it adds anything."
+    )
+
     def raw_forecast(self, ohlcv: pd.DataFrame) -> pd.Series:
         close = ohlcv["close"]
         speed = float(self.values["speed"])
